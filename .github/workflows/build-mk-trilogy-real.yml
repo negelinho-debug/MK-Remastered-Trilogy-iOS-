@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 90
 
     steps:
+
       # ==========================================================
       # CHECKOUT
       # ==========================================================
@@ -37,12 +38,11 @@ jobs:
           echo "===== XCODE ====="
           xcodebuild -version
 
-          echo "===== TOOLS ====="
+          echo "===== INNOEXTRACT ====="
           innoextract --version
-          7z | head -5 || true
 
       # ==========================================================
-      # FOLDERS
+      # CLEAN
       # ==========================================================
 
       - name: Prepare folders
@@ -54,6 +54,9 @@ jobs:
           rm -rf release-files
           rm -rf extracted
           rm -rf games
+          rm -rf dospad
+          rm -rf build
+          rm -rf Payload
           rm -rf output
 
           mkdir -p raw-installers
@@ -66,23 +69,26 @@ jobs:
           mkdir -p output
 
       # ==========================================================
-      # COLLECT INSTALLERS FROM REPOSITORY
+      # COLLECT EXE FROM REPOSITORY
       # ==========================================================
 
       - name: Collect installers from repository
         run: |
           set -e
 
-          N=0
+          COUNT=0
 
           while IFS= read -r FILE; do
 
             [ -z "$FILE" ] && continue
 
-            N=$((N + 1))
+            COUNT=$((COUNT + 1))
+
+            echo "FOUND:"
+            echo "$FILE"
 
             cp "$FILE" \
-              "raw-installers/repo_${N}.exe"
+              "raw-installers/repo_${COUNT}.exe"
 
           done < <(
             find . \
@@ -94,14 +100,17 @@ jobs:
               -not -path "./release-files/*" \
               -not -path "./extracted/*" \
               -not -path "./games/*" \
+              -not -path "./dospad/*" \
               | sort
           )
 
-          echo "===== REPOSITORY EXE ====="
+          echo
+          echo "===== REPOSITORY INSTALLERS ====="
+
           ls -lh raw-installers || true
 
       # ==========================================================
-      # DOWNLOAD LARGE INSTALLER FROM LATEST RELEASE
+      # RELEASE INSTALLER
       # ==========================================================
 
       - name: Download installers from latest Release
@@ -110,7 +119,8 @@ jobs:
         run: |
           set +e
 
-          echo "===== RELEASES ====="
+          echo "===== RELEASE LIST ====="
+
           gh release list
 
           TAG=$(
@@ -120,12 +130,15 @@ jobs:
               --jq '.[0].tagName'
           )
 
-          echo "Latest tag: $TAG"
+          echo "Latest tag:"
+          echo "$TAG"
 
           if [ -n "$TAG" ]; then
+
             gh release download "$TAG" \
               --dir release-files \
               --pattern "*.exe"
+
           fi
 
           N=0
@@ -146,7 +159,9 @@ jobs:
               | sort
           )
 
-          echo "===== ALL RAW INSTALLERS ====="
+          echo
+          echo "===== ALL INSTALLERS ====="
+
           ls -lh raw-installers
 
           exit 0
@@ -171,12 +186,16 @@ jobs:
             DEST="installers/${HASH}.exe"
 
             if [ ! -f "$DEST" ]; then
+
               cp "$FILE" "$DEST"
+
             fi
 
           done
 
+          echo
           echo "===== UNIQUE INSTALLERS ====="
+
           ls -lh installers
 
           COUNT=$(
@@ -187,18 +206,22 @@ jobs:
               | tr -d ' '
           )
 
-          echo "Unique installers: $COUNT"
+          echo "COUNT=$COUNT"
 
           if [ "$COUNT" -lt 3 ]; then
-            echo "ERROR: Need all 3 MK installers."
+
+            echo "ERROR:"
+            echo "Need all three installers."
+
             exit 1
+
           fi
 
       # ==========================================================
-      # EXTRACT ALL
+      # EXTRACT
       # ==========================================================
 
-      - name: Extract MK installers
+      - name: Extract installers
         run: |
           set -e
 
@@ -209,14 +232,16 @@ jobs:
             [ -z "$FILE" ] && continue
 
             N=$((N + 1))
+
             DEST="extracted/pkg${N}"
 
             mkdir -p "$DEST"
 
             echo
-            echo "==================================="
-            echo "EXTRACTING $FILE"
-            echo "==================================="
+            echo "===================================="
+            echo "EXTRACTING"
+            echo "$FILE"
+            echo "===================================="
 
             set +e
 
@@ -229,7 +254,8 @@ jobs:
 
             if [ "$RESULT" -ne 0 ]; then
 
-              echo "innoextract failed -> trying 7z"
+              echo "innoextract failed"
+              echo "trying 7z"
 
               7z x \
                 "$FILE" \
@@ -248,100 +274,151 @@ jobs:
           )
 
           echo
-          echo "===== FOUND GAME EXES ====="
+          echo "===== GAME EXE SEARCH ====="
 
           find extracted \
             -type f \
             \( \
               -iname "MK1.EXE" \
-              -o -iname "MK2.EXE" \
-              -o -iname "MK3.EXE" \
+              -o \
+              -iname "MK2.EXE" \
+              -o \
+              -iname "MK3.EXE" \
             \) \
             -print
 
       # ==========================================================
-      # NORMALIZE MK1 / MK2 / MK3
+      # FIXED NORMALIZATION
       # ==========================================================
 
       - name: Normalize game folders
         run: |
           set -e
 
-          MK1_SRC=$(
+          echo
+          echo "===== FIND REAL GAME EXECUTABLES ====="
+
+          MK1_EXE=$(
             find extracted \
-              -type d \
-              -path "*/app/mk1" \
+              -type f \
+              -iname "MK1.EXE" \
+              -not -path "*/__support/*" \
               | head -1
           )
 
-          MK2_SRC=$(
+          MK2_EXE=$(
             find extracted \
-              -type d \
-              -path "*/app/mk2" \
+              -type f \
+              -iname "MK2.EXE" \
+              -not -path "*/__support/*" \
               | head -1
           )
 
-          MK3_SRC=$(
+          MK3_EXE=$(
             find extracted \
-              -type d \
-              -path "*/app/mk3" \
+              -type f \
+              -iname "MK3.EXE" \
+              -not -path "*/__support/*" \
               | head -1
           )
+
+          echo "MK1_EXE=$MK1_EXE"
+          echo "MK2_EXE=$MK2_EXE"
+          echo "MK3_EXE=$MK3_EXE"
+
+          if [ -z "$MK1_EXE" ]; then
+            echo "ERROR: REAL MK1.EXE NOT FOUND"
+            exit 1
+          fi
+
+          if [ -z "$MK2_EXE" ]; then
+            echo "ERROR: REAL MK2.EXE NOT FOUND"
+            exit 1
+          fi
+
+          if [ -z "$MK3_EXE" ]; then
+            echo "ERROR: REAL MK3.EXE NOT FOUND"
+            exit 1
+          fi
+
+          MK1_SRC="$(dirname "$MK1_EXE")"
+          MK2_SRC="$(dirname "$MK2_EXE")"
+          MK3_SRC="$(dirname "$MK3_EXE")"
+
+          echo
+          echo "===== REAL DIRECTORIES ====="
 
           echo "MK1_SRC=$MK1_SRC"
           echo "MK2_SRC=$MK2_SRC"
           echo "MK3_SRC=$MK3_SRC"
 
-          if [ -z "$MK1_SRC" ]; then
-            MK1_EXE=$(find extracted -type f -iname "MK1.EXE" | head -1)
-            MK1_SRC=$(dirname "$MK1_EXE")
-          fi
+          rm -rf games/mk1
+          rm -rf games/mk2
+          rm -rf games/mk3
 
-          if [ -z "$MK2_SRC" ]; then
-            MK2_EXE=$(find extracted -type f -iname "MK2.EXE" | head -1)
-            MK2_SRC=$(dirname "$MK2_EXE")
-          fi
+          mkdir -p games/mk1
+          mkdir -p games/mk2
+          mkdir -p games/mk3
 
-          if [ -z "$MK3_SRC" ]; then
-            MK3_EXE=$(find extracted -type f -iname "MK3.EXE" | head -1)
-            MK3_SRC=$(dirname "$MK3_EXE")
-          fi
+          cp -R \
+            "$MK1_SRC"/. \
+            games/mk1/
 
-          if [ ! -d "$MK1_SRC" ]; then
-            echo "ERROR: MK1 folder missing"
-            exit 1
-          fi
+          cp -R \
+            "$MK2_SRC"/. \
+            games/mk2/
 
-          if [ ! -d "$MK2_SRC" ]; then
-            echo "ERROR: MK2 folder missing"
-            exit 1
-          fi
+          cp -R \
+            "$MK3_SRC"/. \
+            games/mk3/
 
-          if [ ! -d "$MK3_SRC" ]; then
-            echo "ERROR: MK3 folder missing"
-            exit 1
-          fi
-
-          rm -rf games/mk1/*
-          rm -rf games/mk2/*
-          rm -rf games/mk3/*
-
-          cp -R "$MK1_SRC"/. games/mk1/
-          cp -R "$MK2_SRC"/. games/mk2/
-          cp -R "$MK3_SRC"/. games/mk3/
-
+          echo
           echo "===== VALIDATE ====="
 
-          test -n "$(find games/mk1 -maxdepth 1 -type f -iname 'MK1.EXE' | head -1)"
-          test -n "$(find games/mk2 -maxdepth 1 -type f -iname 'MK2.EXE' | head -1)"
-          test -n "$(find games/mk3 -maxdepth 1 -type f -iname 'MK3.EXE' | head -1)"
+          MK1_FINAL=$(
+            find games/mk1 \
+              -maxdepth 1 \
+              -type f \
+              -iname "MK1.EXE" \
+              | head -1
+          )
 
-          echo "MK1 files: $(find games/mk1 -type f | wc -l)"
-          echo "MK2 files: $(find games/mk2 -type f | wc -l)"
-          echo "MK3 files: $(find games/mk3 -type f | wc -l)"
+          MK2_FINAL=$(
+            find games/mk2 \
+              -maxdepth 1 \
+              -type f \
+              -iname "MK2.EXE" \
+              | head -1
+          )
+
+          MK3_FINAL=$(
+            find games/mk3 \
+              -maxdepth 1 \
+              -type f \
+              -iname "MK3.EXE" \
+              | head -1
+          )
+
+          echo "MK1_FINAL=$MK1_FINAL"
+          echo "MK2_FINAL=$MK2_FINAL"
+          echo "MK3_FINAL=$MK3_FINAL"
+
+          test -n "$MK1_FINAL"
+          test -n "$MK2_FINAL"
+          test -n "$MK3_FINAL"
+
+          echo
+          echo "===== COUNTS ====="
+
+          echo "MK1: $(find games/mk1 -type f | wc -l)"
+          echo "MK2: $(find games/mk2 -type f | wc -l)"
+          echo "MK3: $(find games/mk3 -type f | wc -l)"
+
+          echo
+          echo "NORMALIZATION SUCCESS"
 
       # ==========================================================
-      # CLONE iDOS / DOSBOX
+      # CLONE IDOS
       # ==========================================================
 
       - name: Clone iDOS
@@ -353,17 +430,112 @@ jobs:
             https://github.com/litchie/dospad.git \
             dospad
 
-          echo "===== XCODE PROJECT ====="
+          echo
+          echo "===== IDOS PROJECT ====="
 
           xcodebuild \
             -project dospad/dospad.xcodeproj \
             -list
 
       # ==========================================================
-      # PATCH DOSBOX AUTO BOOT
+      # GAME CONFIG
       # ==========================================================
 
-      - name: Add MK auto boot support
+      - name: Create DOS configs
+        run: |
+          set -e
+
+          for GAME in mk1 mk2 mk3; do
+
+            mkdir -p "games/$GAME/config"
+
+            cp \
+              dospad/Resources/configs/dospad.cfg \
+              "games/$GAME/config/dospad.cfg"
+
+          done
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          for game in ["mk1", "mk2", "mk3"]:
+
+              p = Path(
+                  f"games/{game}/config/dospad.cfg"
+              )
+
+              text = p.read_text(
+                  errors="ignore"
+              )
+
+              text = re.sub(
+                  r"(?m)^frameskip\s*=.*$",
+                  "frameskip=0",
+                  text
+              )
+
+              text = re.sub(
+                  r"(?m)^core\s*=.*$",
+                  "core=dynamic",
+                  text
+              )
+
+              text = re.sub(
+                  r"(?m)^cycles\s*=.*$",
+                  "cycles=max 95%",
+                  text
+              )
+
+              p.write_text(text)
+
+          PY
+
+      # ==========================================================
+      # AUTO BOOT FILES
+      # ==========================================================
+
+      - name: Create game boot commands
+        run: |
+          set -e
+
+          cat > games/mk1/MKAUTO.TXT <<'EOF'
+          MK1.EXE
+          EOF
+
+          cat > games/mk2/MKAUTO.TXT <<'EOF'
+          MK2.EXE
+          EOF
+
+          if [ -f "games/mk3/IMAGE/MK3.cue" ]; then
+
+            cat > games/mk3/MKAUTO.TXT <<'EOF'
+          imgmount d "C:\IMAGE\MK3.cue" -t iso
+          MK3.EXE
+          EOF
+
+          else
+
+            cat > games/mk3/MKAUTO.TXT <<'EOF'
+          MK3.EXE
+          EOF
+
+          fi
+
+          echo "===== MK1 AUTO ====="
+          cat games/mk1/MKAUTO.TXT
+
+          echo "===== MK2 AUTO ====="
+          cat games/mk2/MKAUTO.TXT
+
+          echo "===== MK3 AUTO ====="
+          cat games/mk3/MKAUTO.TXT
+
+      # ==========================================================
+      # PATCH DOSBOX AUTOBOOT
+      # ==========================================================
+
+      - name: Patch DOSBox auto boot
         run: |
           set -e
 
@@ -374,54 +546,68 @@ jobs:
 
           path = sys.argv[1]
 
-          data = open(
+          text = open(
               path,
               "r",
               encoding="utf-8"
           ).read()
 
-          marker = '[self.commandList addObject:@"REM END AUTOMOUNT"];'
+          marker = (
+              '[self.commandList '
+              'addObject:@"REM END AUTOMOUNT"];'
+          )
 
-          if marker not in data:
+          if marker not in text:
+
               raise SystemExit(
-                  "ERROR: DOSPad auto-mount marker not found"
+                  "ERROR: AUTOBOOT MARKER NOT FOUND"
               )
 
-          if "MKTRILOGY AUTOBOOT" in data:
+          if "MKTRILOGY_BOOT_PATCH" in text:
+
+              print(
+                  "Already patched"
+              )
+
               raise SystemExit(0)
 
           patch = marker + r'''
 
-              // ==================================================
-              // MKTRILOGY AUTOBOOT
-              // ==================================================
+              // ================================================
+              // MKTRILOGY_BOOT_PATCH
+              // ================================================
 
-              NSString *mkAutoFile =
+              NSString *mkBootPath =
                   [self.workingDirectory.path
-                   stringByAppendingPathComponent:@"MKAUTO.TXT"];
+                   stringByAppendingPathComponent:
+                   @"MKAUTO.TXT"];
 
               if ([[NSFileManager defaultManager]
-                   fileExistsAtPath:mkAutoFile])
+                   fileExistsAtPath:mkBootPath])
               {
                   NSError *mkError = nil;
 
-                  NSString *mkCommands =
+                  NSString *mkBoot =
                       [NSString
-                       stringWithContentsOfFile:mkAutoFile
-                       encoding:NSUTF8StringEncoding
-                       error:&mkError];
+                       stringWithContentsOfFile:
+                       mkBootPath
+                       encoding:
+                       NSUTF8StringEncoding
+                       error:
+                       &mkError];
 
-                  if (mkCommands.length > 0)
+                  if (mkBoot.length > 0)
                   {
                       NSArray *mkLines =
-                          [mkCommands
+                          [mkBoot
                            componentsSeparatedByCharactersInSet:
-                           [NSCharacterSet newlineCharacterSet]];
+                           [NSCharacterSet
+                            newlineCharacterSet]];
 
-                      for (NSString *mkRawLine in mkLines)
+                      for (NSString *mkRaw in mkLines)
                       {
                           NSString *mkLine =
-                              [mkRawLine
+                              [mkRaw
                                stringByTrimmingCharactersInSet:
                                [NSCharacterSet
                                 whitespaceAndNewlineCharacterSet]];
@@ -435,10 +621,10 @@ jobs:
                   }
               }
 
-              // ===== END MKTRILOGY AUTOBOOT =====
+              // ===== END MKTRILOGY_BOOT_PATCH =====
           '''
 
-          data = data.replace(
+          text = text.replace(
               marker,
               patch,
               1
@@ -448,264 +634,314 @@ jobs:
               path,
               "w",
               encoding="utf-8"
-          ).write(data)
+          ).write(text)
 
-          print("MK autoboot patch OK")
+          print(
+              "DOSBox MK autoboot installed"
+          )
+
           PY
 
       # ==========================================================
-      # CREATE REAL TRILOGY LAUNCHER
+      # TRILOGY MAIN MENU
       # ==========================================================
 
-      - name: Add MK Trilogy launcher
+      - name: Add Trilogy menu
         run: |
           set -e
 
           FILE="dospad/dospad/Main/DPAppDelegate.m"
 
           python3 - "$FILE" <<'PY'
+          import re
           import sys
 
           path = sys.argv[1]
 
-          data = open(
+          text = open(
               path,
               "r",
               encoding="utf-8"
           ).read()
 
-          if "MKTRILOGY_NATIVE_MENU" in data:
-              print("Launcher already patched")
+          if "MKTRILOGY_MAIN_MENU" in text:
+
+              print(
+                  "Menu already installed"
+              )
+
               raise SystemExit(0)
 
-          import_marker = '#import <AVFoundation/AVFoundation.h>'
+          marker = '#import <AVFoundation/AVFoundation.h>'
 
-          if import_marker not in data:
+          if marker not in text:
+
               raise SystemExit(
-                  "ERROR: AVFoundation import marker missing"
+                  "ERROR: DPAppDelegate import marker missing"
               )
 
           launcher = r'''
+
           #import <QuartzCore/QuartzCore.h>
 
-          // ======================================================
-          // MKTRILOGY_NATIVE_MENU
-          // ======================================================
+          // =====================================================
+          // MKTRILOGY_MAIN_MENU
+          // =====================================================
 
-          @interface DPAppDelegate (MKTrilogyBridge)
+          @interface DPAppDelegate (MKTrilogy)
+
+          - (void)mkShowLauncher;
           - (void)mkLaunchGame:(NSString *)game;
-          @end
-
-          @interface MKTrilogyLauncherViewController : UIViewController
-
-          @property (nonatomic, weak) DPAppDelegate *owner;
-
-          @property (nonatomic, strong) CAGradientLayer *backgroundGradient;
-
-          @property (nonatomic, strong) UILabel *titleLabel;
-          @property (nonatomic, strong) UILabel *subtitleLabel;
-          @property (nonatomic, strong) UILabel *chooseLabel;
-          @property (nonatomic, strong) UILabel *footerLabel;
-
-          @property (nonatomic, strong) UISegmentedControl *filterControl;
-
-          @property (nonatomic, strong) UIButton *mk1Button;
-          @property (nonatomic, strong) UIButton *mk2Button;
-          @property (nonatomic, strong) UIButton *mk3Button;
 
           @end
 
-          @implementation MKTrilogyLauncherViewController
+
+          @interface MKTrilogyLauncherViewController
+              : UIViewController
+
+          @property(nonatomic, weak)
+          DPAppDelegate *owner;
+
+          @property(nonatomic, strong)
+          CAGradientLayer *gradient;
+
+          @property(nonatomic, strong)
+          UILabel *mainTitle;
+
+          @property(nonatomic, strong)
+          UILabel *subTitle;
+
+          @property(nonatomic, strong)
+          UILabel *chooseTitle;
+
+          @property(nonatomic, strong)
+          UISegmentedControl *filter;
+
+          @property(nonatomic, strong)
+          UIButton *mk1;
+
+          @property(nonatomic, strong)
+          UIButton *mk2;
+
+          @property(nonatomic, strong)
+          UIButton *mk3;
+
+          @property(nonatomic, strong)
+          UILabel *footer;
+
+          @end
+
+
+          @implementation
+          MKTrilogyLauncherViewController
+
 
           - (void)viewDidLoad
           {
               [super viewDidLoad];
 
-              self.view.backgroundColor = UIColor.blackColor;
+              self.view.backgroundColor =
+                  UIColor.blackColor;
 
-              self.backgroundGradient =
+
+              self.gradient =
                   [CAGradientLayer layer];
 
-              self.backgroundGradient.colors = @[
+              self.gradient.colors = @[
                   (id)[UIColor
-                       colorWithRed:0.18
+                       colorWithRed:0.20
                        green:0.005
-                       blue:0.01
-                       alpha:1.0].CGColor,
+                       blue:0.008
+                       alpha:1].CGColor,
 
                   (id)[UIColor
-                       colorWithRed:0.015
-                       green:0.015
-                       blue:0.022
-                       alpha:1.0].CGColor,
+                       colorWithRed:0.035
+                       green:0.012
+                       blue:0.015
+                       alpha:1].CGColor,
 
                   (id)UIColor.blackColor.CGColor
               ];
 
-              self.backgroundGradient.locations =
-                  @[@0.0, @0.46, @1.0];
+              self.gradient.locations =
+                  @[
+                    @0.0,
+                    @0.45,
+                    @1.0
+                  ];
 
               [self.view.layer
-               insertSublayer:self.backgroundGradient
+               insertSublayer:
+               self.gradient
                atIndex:0];
 
-              self.titleLabel =
+
+              self.mainTitle =
                   [[UILabel alloc] init];
 
-              self.titleLabel.text =
+              self.mainTitle.text =
                   @"MORTAL KOMBAT";
 
-              self.titleLabel.textColor =
+              self.mainTitle.textColor =
                   UIColor.whiteColor;
 
-              self.titleLabel.textAlignment =
+              self.mainTitle.textAlignment =
                   NSTextAlignmentCenter;
 
-              self.titleLabel.font =
+              self.mainTitle.font =
                   [UIFont
-                   systemFontOfSize:34
+                   systemFontOfSize:39
                    weight:UIFontWeightBlack];
 
               [self.view
-               addSubview:self.titleLabel];
+               addSubview:self.mainTitle];
 
 
-              self.subtitleLabel =
+              self.subTitle =
                   [[UILabel alloc] init];
 
-              self.subtitleLabel.text =
+              self.subTitle.text =
                   @"REMASTERED TRILOGY";
 
-              self.subtitleLabel.textColor =
+              self.subTitle.textColor =
                   [UIColor
-                   colorWithRed:0.9
-                   green:0.07
-                   blue:0.05
-                   alpha:1.0];
+                   colorWithRed:1
+                   green:0.10
+                   blue:0.09
+                   alpha:1];
 
-              self.subtitleLabel.textAlignment =
+              self.subTitle.textAlignment =
                   NSTextAlignmentCenter;
 
-              self.subtitleLabel.font =
+              self.subTitle.font =
                   [UIFont
-                   systemFontOfSize:18
+                   systemFontOfSize:19
+                   weight:UIFontWeightBlack];
+
+              [self.view
+               addSubview:self.subTitle];
+
+
+              self.chooseTitle =
+                  [[UILabel alloc] init];
+
+              self.chooseTitle.text =
+                  @"CHOOSE YOUR MK";
+
+              self.chooseTitle.textAlignment =
+                  NSTextAlignmentCenter;
+
+              self.chooseTitle.textColor =
+                  [UIColor
+                   colorWithWhite:0.82
+                   alpha:1];
+
+              self.chooseTitle.font =
+                  [UIFont
+                   systemFontOfSize:14
                    weight:UIFontWeightBold];
 
               [self.view
-               addSubview:self.subtitleLabel];
+               addSubview:self.chooseTitle];
 
 
-              self.chooseLabel =
-                  [[UILabel alloc] init];
-
-              self.chooseLabel.text =
-                  @"CHOOSE YOUR MK";
-
-              self.chooseLabel.textColor =
-                  [UIColor
-                   colorWithWhite:0.82
-                   alpha:1.0];
-
-              self.chooseLabel.textAlignment =
-                  NSTextAlignmentCenter;
-
-              self.chooseLabel.font =
-                  [UIFont
-                   systemFontOfSize:14
-                   weight:UIFontWeightSemibold];
-
-              [self.view
-               addSubview:self.chooseLabel];
-
-
-              self.filterControl =
+              self.filter =
                   [[UISegmentedControl alloc]
-                   initWithItems:@[
-                      @"CLASSIC",
-                      @"CRT+"
+                   initWithItems:
+                   @[
+                     @"CLASSIC",
+                     @"CRT+"
                    ]];
 
-              NSInteger fx =
-                  [[NSUserDefaults standardUserDefaults]
-                   boolForKey:@"MKEnhanced"]
-                  ? 1
-                  : 0;
+              BOOL enhanced =
+                  [[NSUserDefaults
+                    standardUserDefaults]
+                   boolForKey:@"MKEnhanced"];
 
-              self.filterControl.selectedSegmentIndex = fx;
+              self.filter.selectedSegmentIndex =
+                  enhanced ? 1 : 0;
 
               if (@available(iOS 13.0, *))
               {
-                  self.filterControl.selectedSegmentTintColor =
+                  self.filter.selectedSegmentTintColor =
                       [UIColor
-                       colorWithRed:0.55
-                       green:0.02
-                       blue:0.02
-                       alpha:1.0];
+                       colorWithRed:0.60
+                       green:0.03
+                       blue:0.03
+                       alpha:1];
               }
 
-              [self.filterControl
+              [self.filter
                addTarget:self
                action:@selector(filterChanged:)
-               forControlEvents:UIControlEventValueChanged];
+               forControlEvents:
+               UIControlEventValueChanged];
 
               [self.view
-               addSubview:self.filterControl];
+               addSubview:self.filter];
 
 
-              self.mk1Button =
-                  [self mkButton:@"MORTAL KOMBAT"
-                              tag:1];
+              self.mk1 =
+                  [self
+                   makeButton:@"MORTAL KOMBAT"
+                   game:@"mk1"];
 
-              self.mk2Button =
-                  [self mkButton:@"MORTAL KOMBAT II"
-                              tag:2];
+              self.mk2 =
+                  [self
+                   makeButton:@"MORTAL KOMBAT II"
+                   game:@"mk2"];
 
-              self.mk3Button =
-                  [self mkButton:@"MORTAL KOMBAT 3"
-                              tag:3];
-
-              [self.view addSubview:self.mk1Button];
-              [self.view addSubview:self.mk2Button];
-              [self.view addSubview:self.mk3Button];
+              self.mk3 =
+                  [self
+                   makeButton:@"MORTAL KOMBAT 3"
+                   game:@"mk3"];
 
 
-              self.footerLabel =
+              [self.view addSubview:self.mk1];
+              [self.view addSubview:self.mk2];
+              [self.view addSubview:self.mk3];
+
+
+              self.footer =
                   [[UILabel alloc] init];
 
-              self.footerLabel.text =
-                  @"REAL CLASSIC ENGINE  •  TOUCH CONTROLS  •  CRT FILTER";
+              self.footer.text =
+                  @"REAL CLASSIC ENGINE • TOUCH • CRT FX";
 
-              self.footerLabel.textColor =
+              self.footer.textColor =
                   [UIColor
-                   colorWithWhite:0.5
-                   alpha:1.0];
+                   colorWithWhite:0.45
+                   alpha:1];
 
-              self.footerLabel.textAlignment =
+              self.footer.textAlignment =
                   NSTextAlignmentCenter;
 
-              self.footerLabel.font =
+              self.footer.font =
                   [UIFont
                    systemFontOfSize:10
-                   weight:UIFontWeightMedium];
+                   weight:UIFontWeightBold];
 
               [self.view
-               addSubview:self.footerLabel];
+               addSubview:self.footer];
           }
 
 
-          - (UIButton *)mkButton:(NSString *)title
-                            tag:(NSInteger)tag
+          - (UIButton *)makeButton:
+              (NSString *)title
+              game:(NSString *)game
           {
               UIButton *button =
                   [UIButton
-                   buttonWithType:UIButtonTypeSystem];
+                   buttonWithType:
+                   UIButtonTypeSystem];
 
               [button
                setTitle:title
                forState:UIControlStateNormal];
 
               [button
-               setTitleColor:UIColor.whiteColor
+               setTitleColor:
+               UIColor.whiteColor
                forState:UIControlStateNormal];
 
               button.titleLabel.font =
@@ -715,74 +951,65 @@ jobs:
 
               button.backgroundColor =
                   [UIColor
-                   colorWithRed:0.34
-                   green:0.015
-                   blue:0.018
-                   alpha:0.96];
+                   colorWithRed:0.36
+                   green:0.018
+                   blue:0.02
+                   alpha:0.98];
 
               button.layer.cornerRadius = 14;
-              button.layer.borderWidth = 1.0;
+
+              button.layer.borderWidth = 1;
 
               button.layer.borderColor =
                   [UIColor
-                   colorWithWhite:1.0
-                   alpha:0.14].CGColor;
+                   colorWithWhite:1
+                   alpha:0.15].CGColor;
 
-              button.layer.shadowColor =
-                  UIColor.blackColor.CGColor;
-
-              button.layer.shadowOpacity = 0.55;
-              button.layer.shadowRadius = 8;
-              button.layer.shadowOffset =
-                  CGSizeMake(0, 5);
-
-              button.tag = tag;
+              button.accessibilityIdentifier =
+                  game;
 
               [button
                addTarget:self
                action:@selector(gamePressed:)
-               forControlEvents:UIControlEventTouchUpInside];
+               forControlEvents:
+               UIControlEventTouchUpInside];
 
               return button;
           }
 
 
-          - (void)filterChanged:(UISegmentedControl *)sender
+          - (void)filterChanged:
+              (UISegmentedControl *)sender
           {
               BOOL enhanced =
                   sender.selectedSegmentIndex == 1;
 
-              [[NSUserDefaults standardUserDefaults]
+              [[NSUserDefaults
+                standardUserDefaults]
                setBool:enhanced
                forKey:@"MKEnhanced"];
 
-              [[NSUserDefaults standardUserDefaults]
+              [[NSUserDefaults
+                standardUserDefaults]
                synchronize];
           }
 
 
-          - (void)gamePressed:(UIButton *)sender
+          - (void)gamePressed:
+              (UIButton *)sender
           {
-              NSString *game = nil;
-
-              if (sender.tag == 1)
-                  game = @"mk1";
-
-              if (sender.tag == 2)
-                  game = @"mk2";
-
-              if (sender.tag == 3)
-                  game = @"mk3";
+              NSString *game =
+                  sender.accessibilityIdentifier;
 
               if (game.length == 0)
                   return;
 
-              self.mk1Button.enabled = NO;
-              self.mk2Button.enabled = NO;
-              self.mk3Button.enabled = NO;
-
-              self.chooseLabel.text =
+              self.chooseTitle.text =
                   @"LOADING...";
+
+              self.mk1.enabled = NO;
+              self.mk2.enabled = NO;
+              self.mk3.enabled = NO;
 
               [self.owner
                mkLaunchGame:game];
@@ -793,88 +1020,92 @@ jobs:
           {
               [super viewDidLayoutSubviews];
 
-              CGRect bounds =
+              CGRect b =
                   self.view.bounds;
 
               CGFloat w =
-                  CGRectGetWidth(bounds);
+                  CGRectGetWidth(b);
 
               CGFloat h =
-                  CGRectGetHeight(bounds);
+                  CGRectGetHeight(b);
 
-              self.backgroundGradient.frame =
-                  bounds;
+              self.gradient.frame = b;
 
-              CGFloat contentWidth =
-                  MIN(390.0, w - 80.0);
-
-              CGFloat x =
-                  (w - contentWidth) * 0.5;
-
-              self.titleLabel.frame =
+              self.mainTitle.frame =
                   CGRectMake(
                       0,
-                      14,
+                      15,
                       w,
-                      42
+                      48
                   );
 
-              self.subtitleLabel.frame =
+              self.subTitle.frame =
                   CGRectMake(
                       0,
-                      51,
+                      60,
                       w,
-                      28
+                      27
                   );
 
-              self.chooseLabel.frame =
+              self.chooseTitle.frame =
                   CGRectMake(
                       0,
-                      78,
+                      91,
                       w,
                       20
                   );
 
-              self.filterControl.frame =
+              self.filter.frame =
                   CGRectMake(
-                      (w - 250) * 0.5,
-                      101,
+                      (w - 250) / 2,
+                      117,
                       250,
-                      30
+                      31
                   );
 
-              CGFloat buttonHeight = 50;
-              CGFloat gap = 9;
-              CGFloat startY = 143;
+              CGFloat bw =
+                  MIN(
+                      430,
+                      w - 100
+                  );
 
-              self.mk1Button.frame =
+              CGFloat x =
+                  (w - bw) / 2;
+
+              CGFloat bh = 55;
+
+              CGFloat gap = 12;
+
+              CGFloat y = 170;
+
+              self.mk1.frame =
                   CGRectMake(
                       x,
-                      startY,
-                      contentWidth,
-                      buttonHeight
+                      y,
+                      bw,
+                      bh
                   );
 
-              self.mk2Button.frame =
+              self.mk2.frame =
                   CGRectMake(
                       x,
-                      startY + buttonHeight + gap,
-                      contentWidth,
-                      buttonHeight
+                      y + bh + gap,
+                      bw,
+                      bh
                   );
 
-              self.mk3Button.frame =
+              self.mk3.frame =
                   CGRectMake(
                       x,
-                      startY + (buttonHeight + gap) * 2,
-                      contentWidth,
-                      buttonHeight
+                      y + (bh + gap) * 2,
+                      bw,
+                      bh
                   );
 
-              self.footerLabel.frame =
+              self.footer.frame =
                   CGRectMake(
                       0,
-                      h - 30,
+                      h - 28,
                       w,
                       18
                   );
@@ -887,370 +1118,127 @@ jobs:
           }
 
 
-          - (UIInterfaceOrientationMask)supportedInterfaceOrientations
+          - (UIInterfaceOrientationMask)
+              supportedInterfaceOrientations
           {
-              return UIInterfaceOrientationMaskLandscape;
+              return
+                  UIInterfaceOrientationMaskLandscape;
           }
+
 
           @end
 
-          // ===== END MKTRILOGY_NATIVE_MENU =====
+          // ===== END MKTRILOGY_MAIN_MENU =====
+
           '''
 
-          data = data.replace(
-              import_marker,
-              import_marker + "\n" + launcher,
+          text = text.replace(
+              marker,
+              marker + launcher,
               1
           )
 
-          old_start = '''
-          #ifdef THREADED
-              // FIXME at present it is a must to delay emulation thread
-              [self performSelector:@selector(startDOS) withObject:nil afterDelay:1];
-          #endif
-          '''
 
-          # Source formatting can differ in whitespace,
-          # so replace only the actual selector call.
-          target = (
-              '[self performSelector:@selector(startDOS) '
-              'withObject:nil afterDelay:1];'
+          # Replace automatic DOS start with our menu.
+          pattern = (
+              r'#ifdef THREADED'
+              r'.*?'
+              r'\[self performSelector:'
+              r'@selector\(startDOS\)'
+              r' withObject:nil afterDelay:1\];'
+              r'.*?'
+              r'#endif'
           )
 
-          if target not in data:
+          replacement = '''
+              [self performSelector:
+                  @selector(mkShowLauncher)
+                  withObject:nil
+                  afterDelay:0.25];
+          '''
+
+          new_text, count = re.subn(
+              pattern,
+              replacement,
+              text,
+              count=1,
+              flags=re.S
+          )
+
+          if count != 1:
+
               raise SystemExit(
-                  "ERROR: automatic startDOS call not found"
+                  "ERROR: STARTDOS PATCH FAILED"
               )
 
-          data = data.replace(
-              target,
-              '[self performSelector:@selector(mkShowLauncher) '
-              'withObject:nil afterDelay:0.25];',
-              1
+          text = new_text
+
+
+          method_marker = (
+              '-(void)setWindowTitle:(char *)title'
           )
 
-          marker = '-(void)setWindowTitle:(char *)title'
+          if method_marker not in text:
 
-          if marker not in data:
               raise SystemExit(
-                  "ERROR: setWindowTitle marker not found"
+                  "ERROR: METHOD MARKER NOT FOUND"
               )
 
           methods = r'''
-          // ======================================================
-          // MK TRILOGY METHODS
-          // ======================================================
+
+          // =====================================================
+          // MK TRILOGY LAUNCH METHODS
+          // =====================================================
 
           - (void)mkShowLauncher
           {
-              if ([DOSPadEmulator sharedInstance].started)
+              if ([DOSPadEmulator
+                   sharedInstance].started)
+              {
                   return;
+              }
 
-              MKTrilogyLauncherViewController *launcher =
-                  [[MKTrilogyLauncherViewController alloc] init];
+
+              MKTrilogyLauncherViewController
+                  *launcher =
+                  [[MKTrilogyLauncherViewController
+                    alloc] init];
 
               launcher.owner = self;
 
               launcher.modalPresentationStyle =
                   UIModalPresentationFullScreen;
 
+
               [self.emulatorController
-               presentViewController:launcher
+               presentViewController:
+               launcher
                animated:NO
                completion:nil];
           }
 
 
-          - (NSString *)mkGamepadJSONForGame:(NSString *)game
-          {
-              NSDictionary *config = nil;
-
-              if ([game isEqualToString:@"mk1"])
-              {
-                  config = @{
-                      @"button-left": @{
-                          @"key": @"key-z",
-                          @"title": @"◀"
-                      },
-
-                      @"button-up": @{
-                          @"key": @"key-s",
-                          @"title": @"▲"
-                      },
-
-                      @"button-right": @{
-                          @"key": @"key-c",
-                          @"title": @"▶"
-                      },
-
-                      @"button-down": @{
-                          @"key": @"key-x",
-                          @"title": @"▼"
-                      },
-
-                      @"button-a": @{
-                          @"key": @"key-n",
-                          @"title": @"LP"
-                      },
-
-                      @"button-b": @{
-                          @"key": @"key-m",
-                          @"title": @"LK"
-                      },
-
-                      @"button-x": @{
-                          @"key": @"key-u",
-                          @"title": @"HP"
-                      },
-
-                      @"button-y": @{
-                          @"key": @"key-i",
-                          @"title": @"HK"
-                      },
-
-                      @"button-r1": @{
-                          @"key": @"key-j",
-                          @"title": @"BLK"
-                      },
-
-                      @"button-r2": @{
-                          @"key": @"key-esc",
-                          @"title": @"ESC"
-                      },
-
-                      @"button-l1": @{
-                          @"key": @"key-f1",
-                          @"title": @"START"
-                      },
-
-                      @"button-l2": @{
-                          @"key": @"key-f10",
-                          @"title": @"OPT"
-                      }
-                  };
-              }
-
-
-              else if ([game isEqualToString:@"mk2"])
-              {
-                  config = @{
-                      @"button-left": @{
-                          @"key": @"key-left",
-                          @"title": @"◀"
-                      },
-
-                      @"button-up": @{
-                          @"key": @"key-up",
-                          @"title": @"▲"
-                      },
-
-                      @"button-right": @{
-                          @"key": @"key-right",
-                          @"title": @"▶"
-                      },
-
-                      @"button-down": @{
-                          @"key": @"key-down",
-                          @"title": @"▼"
-                      },
-
-                      @"button-a": @{
-                          @"key": @"key-kp-page-down",
-                          @"title": @"LP"
-                      },
-
-                      @"button-b": @{
-                          @"key": @"key-kp-end",
-                          @"title": @"LK"
-                      },
-
-                      @"button-x": @{
-                          @"key": @"key-kp-page-up",
-                          @"title": @"HP"
-                      },
-
-                      @"button-y": @{
-                          @"key": @"key-kp-home",
-                          @"title": @"HK"
-                      },
-
-                      @"button-r1": @{
-                          @"key": @"key-kp-5",
-                          @"title": @"BLK"
-                      },
-
-                      @"button-r2": @{
-                          @"key": @"key-esc",
-                          @"title": @"ESC"
-                      },
-
-                      @"button-l1": @{
-                          @"key": @"key-f1",
-                          @"title": @"START"
-                      },
-
-                      @"button-l2": @{
-                          @"key": @"key-f10",
-                          @"title": @"OPT"
-                      }
-                  };
-              }
-
-
-              else
-              {
-                  config = @{
-                      @"button-left": @{
-                          @"key": @"key-left",
-                          @"title": @"◀"
-                      },
-
-                      @"button-up": @{
-                          @"key": @"key-up",
-                          @"title": @"▲"
-                      },
-
-                      @"button-right": @{
-                          @"key": @"key-right",
-                          @"title": @"▶"
-                      },
-
-                      @"button-down": @{
-                          @"key": @"key-down",
-                          @"title": @"▼"
-                      },
-
-                      @"button-a": @{
-                          @"key": @"key-kp-end",
-                          @"title": @"LP"
-                      },
-
-                      @"button-b": @{
-                          @"key": @"key-kp-page-down",
-                          @"title": @"LK"
-                      },
-
-                      @"button-x": @{
-                          @"key": @"key-kp-left",
-                          @"title": @"HP"
-                      },
-
-                      @"button-y": @{
-                          @"key": @"key-kp-right",
-                          @"title": @"HK"
-                      },
-
-                      @"button-r1": @{
-                          @"key": @"key-kp-down",
-                          @"title": @"BLK"
-                      },
-
-                      @"button-r2": @{
-                          @"key": @"key-esc",
-                          @"title": @"ESC"
-                      },
-
-                      @"button-l1": @{
-                          @"key": @"key-kp-insert",
-                          @"title": @"RUN"
-                      },
-
-                      @"button-l2": @{
-                          @"key": @"key-enter",
-                          @"title": @"START"
-                      }
-                  };
-              }
-
-
-              NSError *error = nil;
-
-              NSData *jsonData =
-                  [NSJSONSerialization
-                   dataWithJSONObject:config
-                   options:NSJSONWritingPrettyPrinted
-                   error:&error];
-
-              if (!jsonData)
-              {
-                  NSLog(
-                      @"MK gamepad JSON error: %@",
-                      error
-                  );
-
-                  return @"{}";
-              }
-
-              return
-                  [[NSString alloc]
-                   initWithData:jsonData
-                   encoding:NSUTF8StringEncoding];
-          }
-
-
-          - (void)mkPrepareDOSConfigAtPath:(NSString *)path
-                                      game:(NSString *)game
-          {
-              NSString *bundled =
-                  [[[NSBundle mainBundle]
-                    resourcePath]
-                   stringByAppendingPathComponent:
-                   @"configs/dospad.cfg"];
-
-              NSError *error = nil;
-
-              NSString *cfg =
-                  [NSString
-                   stringWithContentsOfFile:bundled
-                   encoding:NSUTF8StringEncoding
-                   error:&error];
-
-              if (cfg.length == 0)
-                  cfg = @"";
-
-              cfg =
-                  [cfg
-                   stringByReplacingOccurrencesOfString:
-                   @"core=simple"
-                   withString:
-                   @"core=dynamic"];
-
-              cfg =
-                  [cfg
-                   stringByReplacingOccurrencesOfString:
-                   @"frameskip=1"
-                   withString:
-                   @"frameskip=0"];
-
-              cfg =
-                  [cfg
-                   stringByReplacingOccurrencesOfString:
-                   @"frameskip=2"
-                   withString:
-                   @"frameskip=0"];
-
-              [cfg
-               writeToFile:path
-               atomically:YES
-               encoding:NSUTF8StringEncoding
-               error:nil];
-          }
-
-
-          - (void)mkLaunchGame:(NSString *)game
+          - (void)mkLaunchGame:
+              (NSString *)game
           {
               NSFileManager *fm =
-                  [NSFileManager defaultManager];
+                  [NSFileManager
+                   defaultManager];
 
-              NSString *bundleGames =
-                  [[[NSBundle mainBundle]
+
+              NSString *bundleRoot =
+                  [[[NSBundle
+                     mainBundle]
                     bundlePath]
                    stringByAppendingPathComponent:
                    @"MKGames"];
 
+
               NSString *source =
-                  [bundleGames
-                   stringByAppendingPathComponent:game];
+                  [bundleRoot
+                   stringByAppendingPathComponent:
+                   game];
+
 
               NSString *documents =
                   [NSSearchPathForDirectoriesInDomains(
@@ -1259,83 +1247,99 @@ jobs:
                       YES
                    ) lastObject];
 
+
               NSString *root =
                   [documents
                    stringByAppendingPathComponent:
-                   @"MK-Trilogy"];
+                   @"MKTrilogy"];
+
 
               NSString *destination =
                   [root
-                   stringByAppendingPathComponent:game];
+                   stringByAppendingPathComponent:
+                   game];
+
 
               [fm
-               createDirectoryAtPath:root
+               createDirectoryAtPath:
+               root
                withIntermediateDirectories:YES
                attributes:nil
                error:nil];
 
 
-              NSString *exeName = nil;
+              NSString *exe = nil;
 
-              if ([game isEqualToString:@"mk1"])
-                  exeName = @"MK1.EXE";
+              if ([game
+                   isEqualToString:@"mk1"])
+              {
+                  exe = @"MK1.EXE";
+              }
 
-              else if ([game isEqualToString:@"mk2"])
-                  exeName = @"MK2.EXE";
+              else if ([game
+                        isEqualToString:@"mk2"])
+              {
+                  exe = @"MK2.EXE";
+              }
 
               else
-                  exeName = @"MK3.EXE";
+              {
+                  exe = @"MK3.EXE";
+              }
 
 
-              NSString *destinationExe =
+              NSString *testExe =
                   [destination
                    stringByAppendingPathComponent:
-                   exeName];
+                   exe];
 
 
-              // Copy game once.
-              // Afterwards the Documents copy remains,
-              // so game saves and settings survive.
               if (![fm
-                    fileExistsAtPath:destinationExe])
+                    fileExistsAtPath:testExe])
               {
                   [fm
-                   removeItemAtPath:destination
+                   removeItemAtPath:
+                   destination
                    error:nil];
+
 
                   NSError *copyError = nil;
 
                   BOOL copied =
                       [fm
-                       copyItemAtPath:source
-                       toPath:destination
-                       error:&copyError];
+                       copyItemAtPath:
+                       source
+                       toPath:
+                       destination
+                       error:
+                       &copyError];
+
 
                   if (!copied)
                   {
-                      NSLog(
-                          @"MK COPY ERROR: %@",
-                          copyError
-                      );
-
                       UIAlertController *alert =
                           [UIAlertController
                            alertControllerWithTitle:
-                           @"GAME FILE ERROR"
+                           @"COPY ERROR"
                            message:
                            copyError.localizedDescription
                            preferredStyle:
                            UIAlertControllerStyleAlert];
 
+
                       [alert
                        addAction:
                        [UIAlertAction
                         actionWithTitle:@"OK"
-                        style:UIAlertActionStyleDefault
+                        style:
+                        UIAlertActionStyleDefault
                         handler:nil]];
 
-                      [self.emulatorController.presentedViewController
-                       presentViewController:alert
+
+                      [self.emulatorController
+                       .presentedViewController
+                       presentViewController:
+                       alert
                        animated:YES
                        completion:nil];
 
@@ -1344,125 +1348,32 @@ jobs:
               }
 
 
-              NSString *configDir =
-                  [destination
-                   stringByAppendingPathComponent:
-                   @"config"];
-
-              [fm
-               createDirectoryAtPath:configDir
-               withIntermediateDirectories:YES
-               attributes:nil
-               error:nil];
-
-
-              // ==================================================
-              // TOUCH CONTROLS
-              // ==================================================
-
-              NSString *padPath =
-                  [configDir
-                   stringByAppendingPathComponent:
-                   @"gamepad.cfg"];
-
-              NSString *pad =
-                  [self
-                   mkGamepadJSONForGame:game];
-
-              [pad
-               writeToFile:padPath
-               atomically:YES
-               encoding:NSUTF8StringEncoding
-               error:nil];
-
-
-              // ==================================================
-              // DOSBOX PERFORMANCE CONFIG
-              // ==================================================
-
-              NSString *cfgPath =
-                  [configDir
-                   stringByAppendingPathComponent:
-                   @"dospad.cfg"];
-
-              [self
-               mkPrepareDOSConfigAtPath:cfgPath
-               game:game];
-
-
-              // ==================================================
-              // AUTO BOOT
-              // ==================================================
-
-              NSString *autoText = nil;
-
-              if ([game isEqualToString:@"mk1"])
-              {
-                  autoText =
-                      @"MK1.EXE\n";
-              }
-
-              else if ([game isEqualToString:@"mk2"])
-              {
-                  autoText =
-                      @"MK2.EXE\n";
-              }
-
-              else
-              {
-                  NSString *cue =
-                      [destination
-                       stringByAppendingPathComponent:
-                       @"IMAGE/MK3.cue"];
-
-                  if ([fm fileExistsAtPath:cue])
-                  {
-                      autoText =
-                          @"imgmount d \"C:\\IMAGE\\MK3.cue\" -t iso\n"
-                           "MK3.EXE\n";
-                  }
-
-                  else
-                  {
-                      autoText =
-                          @"MK3.EXE\n";
-                  }
-              }
-
-
-              NSString *autoPath =
-                  [destination
-                   stringByAppendingPathComponent:
-                   @"MKAUTO.TXT"];
-
-              [autoText
-               writeToFile:autoPath
-               atomically:YES
-               encoding:NSUTF8StringEncoding
-               error:nil];
-
-
-              // Remember currently running MK.
-              [[NSUserDefaults standardUserDefaults]
+              [[NSUserDefaults
+                standardUserDefaults]
                setObject:game
                forKey:@"MKCurrentGame"];
 
-              [[NSUserDefaults standardUserDefaults]
+              [[NSUserDefaults
+                standardUserDefaults]
                synchronize];
 
 
-              // Set THIS game folder as C:
-              [DOSPadEmulator sharedInstance].workingDirectory =
+              [DOSPadEmulator
+               sharedInstance].workingDirectory =
                   [NSURL
-                   fileURLWithPath:destination
+                   fileURLWithPath:
+                   destination
                    isDirectory:YES];
 
 
-              UIViewController *launcher =
-                  self.emulatorController.presentedViewController;
+              UIViewController *menu =
+                  self.emulatorController
+                  .presentedViewController;
 
-              [launcher
-               dismissViewControllerAnimated:YES
+
+              [menu
+               dismissViewControllerAnimated:
+               YES
                completion:^{
 
                   [self startDOS];
@@ -1470,30 +1381,35 @@ jobs:
                }];
           }
 
-          // ===== END MK TRILOGY METHODS =====
+          // ===== END MK LAUNCH METHODS =====
 
           '''
 
-          data = data.replace(
-              marker,
-              methods + marker,
+          text = text.replace(
+              method_marker,
+              methods + method_marker,
               1
           )
+
 
           open(
               path,
               "w",
               encoding="utf-8"
-          ).write(data)
+          ).write(text)
 
-          print("MK Trilogy launcher installed")
+
+          print(
+              "MK Trilogy main menu installed"
+          )
+
           PY
 
       # ==========================================================
-      # PATCH TOUCH GAMEPAD + CRT FX + PAUSE
+      # TOUCH CONTROLS + CRT FX
       # ==========================================================
 
-      - name: Add touch controls and CRT filter
+      - name: Add MK touch controls and CRT FX
         run: |
           set -e
 
@@ -1504,576 +1420,853 @@ jobs:
 
           path = sys.argv[1]
 
-          data = open(
+          text = open(
               path,
               "r",
               encoding="utf-8"
           ).read()
 
-          if "MKTRILOGY_GAME_UI" in data:
-              print("Game UI already patched")
+          if "MKTRILOGY_TOUCH_CONTROLS" in text:
+
+              print(
+                  "Touch controls already installed"
+              )
+
               raise SystemExit(0)
 
-          import_marker = '#import <UIKit/UIKit.h>'
 
-          data = data.replace(
-              import_marker,
-              import_marker +
-              '\n#import <QuartzCore/QuartzCore.h>',
-              1
-          )
+          marker = '// MARK: DPGamepadDelegate'
 
+          if marker not in text:
 
-          methods_marker = '// MARK: DOSEmulatorDelegate'
-
-          if methods_marker not in data:
               raise SystemExit(
-                  "ERROR: emulator delegate marker missing"
+                  "ERROR: DPGamepad marker missing"
               )
 
 
           methods = r'''
-          // ======================================================
-          // MKTRILOGY_GAME_UI
-          // ======================================================
+
+          // =====================================================
+          // MKTRILOGY_TOUCH_CONTROLS
+          // =====================================================
 
           - (NSString *)mkCurrentGame
           {
               NSString *game =
-                  [[NSUserDefaults standardUserDefaults]
+                  [[NSUserDefaults
+                    standardUserDefaults]
                    stringForKey:@"MKCurrentGame"];
 
               return game ?: @"mk1";
           }
 
 
-          - (void)mkApplyVisualFilter
-          {
-              if (!self.screenView)
-                  return;
-
-              BOOL enhanced =
-                  [[NSUserDefaults standardUserDefaults]
-                   boolForKey:@"MKEnhanced"];
-
-
-              // Remove old overlay.
-              UIView *old =
-                  [_rootContainer
-                   viewWithTag:909090];
-
-              [old removeFromSuperview];
-
-
-              if (enhanced)
-              {
-                  self.screenView.layer.magnificationFilter =
-                      kCAFilterLinear;
-
-                  UIView *overlay =
-                      [[UIView alloc]
-                       initWithFrame:self.screenView.frame];
-
-                  overlay.tag = 909090;
-                  overlay.userInteractionEnabled = NO;
-                  overlay.backgroundColor =
-                      [UIColor clearColor];
-
-                  overlay.autoresizingMask =
-                      UIViewAutoresizingFlexibleWidth |
-                      UIViewAutoresizingFlexibleHeight;
-
-
-                  // Slight contrast / dark tint.
-                  CAGradientLayer *vignette =
-                      [CAGradientLayer layer];
-
-                  vignette.frame =
-                      overlay.bounds;
-
-                  vignette.colors = @[
-                      (id)[UIColor
-                           colorWithWhite:0
-                           alpha:0.02].CGColor,
-
-                      (id)[UIColor
-                           colorWithRed:0.13
-                           green:0.0
-                           blue:0.0
-                           alpha:0.03].CGColor,
-
-                      (id)[UIColor
-                           colorWithWhite:0
-                           alpha:0.11].CGColor
-                  ];
-
-                  vignette.locations =
-                      @[@0.0, @0.52, @1.0];
-
-                  [overlay.layer
-                   addSublayer:vignette];
-
-
-                  // CRT scanlines.
-                  CGFloat height =
-                      CGRectGetHeight(overlay.bounds);
-
-                  CGFloat width =
-                      CGRectGetWidth(overlay.bounds);
-
-                  for (CGFloat y = 1;
-                       y < height;
-                       y += 5)
-                  {
-                      UIView *line =
-                          [[UIView alloc]
-                           initWithFrame:
-                           CGRectMake(
-                               0,
-                               y,
-                               width,
-                               1
-                           )];
-
-                      line.backgroundColor =
-                          [UIColor
-                           colorWithWhite:0
-                           alpha:0.13];
-
-                      line.userInteractionEnabled = NO;
-
-                      [overlay
-                       addSubview:line];
-                  }
-
-
-                  [_rootContainer
-                   addSubview:overlay];
-
-
-                  DPGamepad *pad =
-                      [self findGamepad];
-
-                  if (pad)
-                      [_rootContainer
-                       bringSubviewToFront:pad];
-              }
-
-              else
-              {
-                  self.screenView.layer.magnificationFilter =
-                      kCAFilterNearest;
-              }
-
-
-              UIView *pause =
-                  [_rootContainer
-                   viewWithTag:909091];
-
-              if (pause)
-                  [_rootContainer
-                   bringSubviewToFront:pause];
-
-
-              UIView *fx =
-                  [_rootContainer
-                   viewWithTag:909092];
-
-              if (fx)
-                  [_rootContainer
-                   bringSubviewToFront:fx];
-          }
-
-
-          - (UIButton *)mkMiniButton:(NSString *)title
-                                tag:(NSInteger)tag
-                              frame:(CGRect)frame
-                             action:(SEL)action
+          - (UIButton *)mkButton:
+              (NSString *)title
+              frame:(CGRect)frame
+              scancode:(NSInteger)scancode
           {
               UIButton *button =
                   [UIButton
-                   buttonWithType:UIButtonTypeSystem];
+                   buttonWithType:
+                   UIButtonTypeSystem];
 
               button.frame = frame;
-              button.tag = tag;
+
+              button.tag = scancode;
 
               [button
                setTitle:title
                forState:UIControlStateNormal];
 
               [button
-               setTitleColor:UIColor.whiteColor
+               setTitleColor:
+               UIColor.whiteColor
                forState:UIControlStateNormal];
 
               button.titleLabel.font =
                   [UIFont
-                   systemFontOfSize:12
+                   systemFontOfSize:15
                    weight:UIFontWeightBlack];
 
               button.backgroundColor =
                   [UIColor
                    colorWithWhite:0
-                   alpha:0.58];
+                   alpha:0.48];
 
-              button.layer.cornerRadius = 10;
-              button.layer.borderWidth = 1;
+              button.layer.cornerRadius = 15;
+
+              button.layer.borderWidth = 1.4;
 
               button.layer.borderColor =
                   [UIColor
                    colorWithWhite:1
-                   alpha:0.25].CGColor;
+                   alpha:0.32].CGColor;
+
 
               [button
                addTarget:self
-               action:action
-               forControlEvents:UIControlEventTouchUpInside];
+               action:@selector(mkKeyDown:)
+               forControlEvents:
+               UIControlEventTouchDown];
+
+
+              [button
+               addTarget:self
+               action:@selector(mkKeyUp:)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
+
+              [button
+               addTarget:self
+               action:@selector(mkKeyUp:)
+               forControlEvents:
+               UIControlEventTouchUpOutside];
+
+
+              [button
+               addTarget:self
+               action:@selector(mkKeyUp:)
+               forControlEvents:
+               UIControlEventTouchCancel];
+
 
               return button;
           }
 
 
-          - (void)mkInstallGameHUD
+          - (void)mkKeyDown:
+              (UIButton *)button
+          {
+              [[DOSPadEmulator
+                sharedInstance]
+               sendKey:
+               (int)button.tag
+               pressed:YES];
+          }
+
+
+          - (void)mkKeyUp:
+              (UIButton *)button
+          {
+              [[DOSPadEmulator
+                sharedInstance]
+               sendKey:
+               (int)button.tag
+               pressed:NO];
+          }
+
+
+          - (void)mkRemoveControls
+          {
+              for (NSInteger tag = 8800;
+                   tag < 8900;
+                   tag++)
+              {
+                  UIView *v =
+                      [_rootContainer
+                       viewWithTag:tag];
+
+                  [v removeFromSuperview];
+              }
+          }
+
+
+          - (void)mkInstallControls
           {
               if (!_rootContainer)
                   return;
 
 
-              DPGamepad *pad =
+              [self mkRemoveControls];
+
+
+              DPGamepad *original =
                   [self findGamepad];
 
-              if (!pad)
+              if (original)
               {
-                  [self createGamepad];
-                  pad = [self findGamepad];
-              }
-
-              if (pad)
-              {
-                  pad.hidden = NO;
-                  pad.alpha = 0.76;
+                  original.hidden = YES;
               }
 
 
-              UIButton *pause =
-                  (UIButton *)
+              CGFloat w =
+                  CGRectGetWidth(
+                      _rootContainer.bounds
+                  );
+
+              CGFloat h =
+                  CGRectGetHeight(
+                      _rootContainer.bounds
+                  );
+
+
+              NSString *game =
+                  [self mkCurrentGame];
+
+
+              NSInteger up;
+              NSInteger down;
+              NSInteger left;
+              NSInteger right;
+
+              NSInteger hp;
+              NSInteger lp;
+              NSInteger hk;
+              NSInteger lk;
+              NSInteger block;
+              NSInteger run;
+              NSInteger start;
+
+
+              if ([game
+                   isEqualToString:@"mk1"])
+              {
+                  up =
+                      SDL_SCANCODE_S;
+
+                  left =
+                      SDL_SCANCODE_Z;
+
+                  right =
+                      SDL_SCANCODE_C;
+
+                  down =
+                      SDL_SCANCODE_X;
+
+                  hp =
+                      SDL_SCANCODE_U;
+
+                  lp =
+                      SDL_SCANCODE_N;
+
+                  block =
+                      SDL_SCANCODE_J;
+
+                  hk =
+                      SDL_SCANCODE_I;
+
+                  lk =
+                      SDL_SCANCODE_M;
+
+                  run = 0;
+
+                  start =
+                      SDL_SCANCODE_F1;
+              }
+
+
+              else if ([game
+                        isEqualToString:@"mk2"])
+              {
+                  up =
+                      SDL_SCANCODE_UP;
+
+                  down =
+                      SDL_SCANCODE_DOWN;
+
+                  left =
+                      SDL_SCANCODE_LEFT;
+
+                  right =
+                      SDL_SCANCODE_RIGHT;
+
+                  hp =
+                      SDL_SCANCODE_KP_9;
+
+                  lp =
+                      SDL_SCANCODE_KP_3;
+
+                  block =
+                      SDL_SCANCODE_KP_5;
+
+                  hk =
+                      SDL_SCANCODE_KP_7;
+
+                  lk =
+                      SDL_SCANCODE_KP_1;
+
+                  run = 0;
+
+                  start =
+                      SDL_SCANCODE_F1;
+              }
+
+
+              else
+              {
+                  up =
+                      SDL_SCANCODE_UP;
+
+                  down =
+                      SDL_SCANCODE_DOWN;
+
+                  left =
+                      SDL_SCANCODE_LEFT;
+
+                  right =
+                      SDL_SCANCODE_RIGHT;
+
+                  hp =
+                      SDL_SCANCODE_KP_4;
+
+                  lp =
+                      SDL_SCANCODE_KP_1;
+
+                  block =
+                      SDL_SCANCODE_KP_2;
+
+                  hk =
+                      SDL_SCANCODE_KP_6;
+
+                  lk =
+                      SDL_SCANCODE_KP_3;
+
+                  run =
+                      SDL_SCANCODE_KP_0;
+
+                  start =
+                      SDL_SCANCODE_RETURN;
+              }
+
+
+              CGFloat d = 57;
+
+              CGFloat attack = 55;
+
+
+              UIButton *upButton =
+                  [self
+                   mkButton:@"▲"
+                   frame:CGRectMake(
+                       83,
+                       h - 171,
+                       d,
+                       d
+                   )
+                   scancode:up];
+
+              upButton.tag = up;
+
+
+              UIButton *leftButton =
+                  [self
+                   mkButton:@"◀"
+                   frame:CGRectMake(
+                       22,
+                       h - 110,
+                       d,
+                       d
+                   )
+                   scancode:left];
+
+
+              UIButton *downButton =
+                  [self
+                   mkButton:@"▼"
+                   frame:CGRectMake(
+                       83,
+                       h - 110,
+                       d,
+                       d
+                   )
+                   scancode:down];
+
+
+              UIButton *rightButton =
+                  [self
+                   mkButton:@"▶"
+                   frame:CGRectMake(
+                       144,
+                       h - 110,
+                       d,
+                       d
+                   )
+                   scancode:right];
+
+
+              NSArray *directionButtons =
+                  @[
+                    upButton,
+                    leftButton,
+                    downButton,
+                    rightButton
+                  ];
+
+
+              for (NSUInteger i = 0;
+                   i < directionButtons.count;
+                   i++)
+              {
+                  UIButton *b =
+                      directionButtons[i];
+
+                  b.tag =
+                      @[
+                        @(up),
+                        @(left),
+                        @(down),
+                        @(right)
+                       ][i].integerValue;
+
+                  b.accessibilityIdentifier =
+                      @"MKCONTROL";
+
                   [_rootContainer
-                   viewWithTag:909091];
+                   addSubview:b];
+              }
 
-              if (!pause)
+
+              CGFloat rightX =
+                  w - 195;
+
+
+              UIButton *hpButton =
+                  [self
+                   mkButton:@"HP"
+                   frame:CGRectMake(
+                       rightX,
+                       h - 173,
+                       attack,
+                       attack
+                   )
+                   scancode:hp];
+
+
+              UIButton *hkButton =
+                  [self
+                   mkButton:@"HK"
+                   frame:CGRectMake(
+                       rightX + 63,
+                       h - 173,
+                       attack,
+                       attack
+                   )
+                   scancode:hk];
+
+
+              UIButton *lpButton =
+                  [self
+                   mkButton:@"LP"
+                   frame:CGRectMake(
+                       rightX,
+                       h - 110,
+                       attack,
+                       attack
+                   )
+                   scancode:lp];
+
+
+              UIButton *lkButton =
+                  [self
+                   mkButton:@"LK"
+                   frame:CGRectMake(
+                       rightX + 63,
+                       h - 110,
+                       attack,
+                       attack
+                   )
+                   scancode:lk];
+
+
+              UIButton *blockButton =
+                  [self
+                   mkButton:@"BLK"
+                   frame:CGRectMake(
+                       rightX + 126,
+                       h - 142,
+                       attack,
+                       attack
+                   )
+                   scancode:block];
+
+
+              NSArray *attackButtons =
+                  @[
+                    hpButton,
+                    hkButton,
+                    lpButton,
+                    lkButton,
+                    blockButton
+                  ];
+
+
+              for (UIButton *b
+                   in attackButtons)
               {
-                  pause =
+                  b.accessibilityIdentifier =
+                      @"MKCONTROL";
+
+                  [_rootContainer
+                   addSubview:b];
+              }
+
+
+              if (run > 0)
+              {
+                  UIButton *runButton =
                       [self
-                       mkMiniButton:@"Ⅱ"
-                       tag:909091
+                       mkButton:@"RUN"
                        frame:CGRectMake(
-                           13,
-                           10,
-                           48,
-                           38
+                           w - 88,
+                           h - 205,
+                           65,
+                           42
                        )
-                       action:@selector(mkPauseMenu)];
+                       scancode:run];
+
+                  runButton.accessibilityIdentifier =
+                      @"MKCONTROL";
 
                   [_rootContainer
-                   addSubview:pause];
+                   addSubview:runButton];
               }
 
 
-              UIButton *fx =
-                  (UIButton *)
-                  [_rootContainer
-                   viewWithTag:909092];
+              UIButton *startButton =
+                  [self
+                   mkButton:@"START"
+                   frame:CGRectMake(
+                       w / 2 - 38,
+                       h - 53,
+                       76,
+                       38
+                   )
+                   scancode:start];
 
-              if (!fx)
-              {
-                  fx =
-                      [self
-                       mkMiniButton:@"FX"
-                       tag:909092
-                       frame:CGRectMake(
-                           _rootContainer.bounds.size.width - 61,
-                           10,
-                           48,
-                           38
-                       )
-                       action:@selector(mkToggleFX)];
-
-                  fx.autoresizingMask =
-                      UIViewAutoresizingFlexibleLeftMargin;
-
-                  [_rootContainer
-                   addSubview:fx];
-              }
-
+              startButton.accessibilityIdentifier =
+                  @"MKCONTROL";
 
               [_rootContainer
-               bringSubviewToFront:pause];
+               addSubview:startButton];
+
+
+              UIButton *escapeButton =
+                  [self
+                   mkButton:@"ESC"
+                   frame:CGRectMake(
+                       12,
+                       8,
+                       55,
+                       36
+                   )
+                   scancode:
+                   SDL_SCANCODE_ESCAPE];
+
+              escapeButton.accessibilityIdentifier =
+                  @"MKCONTROL";
 
               [_rootContainer
-               bringSubviewToFront:fx];
+               addSubview:escapeButton];
+
+
+              UIButton *fxButton =
+                  [UIButton
+                   buttonWithType:
+                   UIButtonTypeSystem];
+
+              fxButton.frame =
+                  CGRectMake(
+                      w - 67,
+                      8,
+                      55,
+                      36
+                  );
+
+              [fxButton
+               setTitle:@"FX"
+               forState:UIControlStateNormal];
+
+              [fxButton
+               setTitleColor:
+               UIColor.whiteColor
+               forState:UIControlStateNormal];
+
+              fxButton.titleLabel.font =
+                  [UIFont
+                   systemFontOfSize:14
+                   weight:UIFontWeightBlack];
+
+              fxButton.backgroundColor =
+                  [UIColor
+                   colorWithWhite:0
+                   alpha:0.52];
+
+              fxButton.layer.cornerRadius = 10;
+
+              [fxButton
+               addTarget:self
+               action:@selector(mkToggleFX)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
+              fxButton.accessibilityIdentifier =
+                  @"MKCONTROL";
+
+              [_rootContainer
+               addSubview:fxButton];
           }
 
 
           - (void)mkToggleFX
           {
               BOOL enabled =
-                  [[NSUserDefaults standardUserDefaults]
+                  [[NSUserDefaults
+                    standardUserDefaults]
                    boolForKey:@"MKEnhanced"];
 
-              enabled = !enabled;
-
-              [[NSUserDefaults standardUserDefaults]
-               setBool:enabled
+              [[NSUserDefaults
+                standardUserDefaults]
+               setBool:!enabled
                forKey:@"MKEnhanced"];
 
-              [[NSUserDefaults standardUserDefaults]
+              [[NSUserDefaults
+                standardUserDefaults]
                synchronize];
 
-              [self mkApplyVisualFilter];
+              [self mkApplyCRT];
           }
 
 
-          - (NSString *)mkControlsText
+          - (void)mkApplyCRT
           {
-              NSString *game =
-                  [self mkCurrentGame];
+              if (!_rootContainer)
+                  return;
 
-              if ([game isEqualToString:@"mk1"])
+
+              UIView *old =
+                  [_rootContainer
+                   viewWithTag:8999];
+
+              [old removeFromSuperview];
+
+
+              BOOL enabled =
+                  [[NSUserDefaults
+                    standardUserDefaults]
+                   boolForKey:@"MKEnhanced"];
+
+
+              if (!enabled)
               {
-                  return
-                      @"D-PAD  MOVE\n"
-                       "LP  LOW PUNCH\n"
-                       "HP  HIGH PUNCH\n"
-                       "LK  LOW KICK\n"
-                       "HK  HIGH KICK\n"
-                       "BLK  BLOCK\n"
-                       "START  F1\n"
-                       "OPT  F10";
+                  self.screenView.layer
+                      .magnificationFilter =
+                      kCAFilterNearest;
+
+                  return;
               }
 
-              if ([game isEqualToString:@"mk2"])
+
+              self.screenView.layer
+                  .magnificationFilter =
+                  kCAFilterLinear;
+
+
+              CGRect screenRect =
+                  [self.screenView
+                   convertRect:
+                   self.screenView.bounds
+                   toView:_rootContainer];
+
+
+              UIView *overlay =
+                  [[UIView alloc]
+                   initWithFrame:
+                   screenRect];
+
+              overlay.tag = 8999;
+
+              overlay.userInteractionEnabled =
+                  NO;
+
+              overlay.clipsToBounds =
+                  YES;
+
+
+              CGFloat width =
+                  CGRectGetWidth(
+                      overlay.bounds
+                  );
+
+              CGFloat height =
+                  CGRectGetHeight(
+                      overlay.bounds
+                  );
+
+
+              for (CGFloat y = 1;
+                   y < height;
+                   y += 4)
               {
-                  return
-                      @"D-PAD  MOVE\n"
-                       "LP  LOW PUNCH\n"
-                       "HP  HIGH PUNCH\n"
-                       "LK  LOW KICK\n"
-                       "HK  HIGH KICK\n"
-                       "BLK  BLOCK\n"
-                       "START  F1\n"
-                       "OPT  F10";
+                  UIView *line =
+                      [[UIView alloc]
+                       initWithFrame:
+                       CGRectMake(
+                           0,
+                           y,
+                           width,
+                           1
+                       )];
+
+                  line.backgroundColor =
+                      [UIColor
+                       colorWithWhite:0
+                       alpha:0.14];
+
+                  [overlay
+                   addSubview:line];
               }
 
-              return
-                  @"D-PAD  MOVE\n"
-                   "LP  LOW PUNCH\n"
-                   "HP  HIGH PUNCH\n"
-                   "LK  LOW KICK\n"
-                   "HK  HIGH KICK\n"
-                   "BLK  BLOCK\n"
-                   "RUN  RUN\n"
-                   "START  ENTER";
+
+              CAGradientLayer *vignette =
+                  [CAGradientLayer layer];
+
+              vignette.frame =
+                  overlay.bounds;
+
+              vignette.colors = @[
+                  (id)[UIColor
+                       colorWithWhite:0
+                       alpha:0.03].CGColor,
+
+                  (id)[UIColor
+                       colorWithRed:0.10
+                       green:0.01
+                       blue:0.01
+                       alpha:0.015].CGColor,
+
+                  (id)[UIColor
+                       colorWithWhite:0
+                       alpha:0.12].CGColor
+              ];
+
+              vignette.locations =
+                  @[
+                    @0,
+                    @0.52,
+                    @1
+                  ];
+
+              [overlay.layer
+               insertSublayer:
+               vignette
+               atIndex:0];
+
+
+              [_rootContainer
+               addSubview:overlay];
+
+
+              for (UIView *v
+                   in _rootContainer.subviews)
+              {
+                  if ([v.accessibilityIdentifier
+                       isEqualToString:
+                       @"MKCONTROL"])
+                  {
+                      [_rootContainer
+                       bringSubviewToFront:v];
+                  }
+              }
           }
 
-
-          - (void)mkShowControls
-          {
-              UIAlertController *alert =
-                  [UIAlertController
-                   alertControllerWithTitle:
-                   @"CONTROLS"
-                   message:
-                   [self mkControlsText]
-                   preferredStyle:
-                   UIAlertControllerStyleAlert];
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:@"BACK"
-                style:UIAlertActionStyleDefault
-                handler:^(UIAlertAction *action) {
-
-                    [self mkPauseMenu];
-
-                }]];
-
-              [self
-               presentViewController:alert
-               animated:YES
-               completion:nil];
-          }
-
-
-          - (void)mkPauseMenu
-          {
-              dospad_pause();
-
-              NSString *game =
-                  [[self mkCurrentGame]
-                   uppercaseString];
-
-              NSString *fxText =
-                  [[NSUserDefaults standardUserDefaults]
-                   boolForKey:@"MKEnhanced"]
-                  ? @"CRT+ ON"
-                  : @"CLASSIC";
-
-              NSString *message =
-                  [NSString
-                   stringWithFormat:
-                   @"%@\n%@",
-                   game,
-                   fxText];
-
-
-              UIAlertController *alert =
-                  [UIAlertController
-                   alertControllerWithTitle:
-                   @"PAUSED"
-                   message:message
-                   preferredStyle:
-                   UIAlertControllerStyleAlert];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:@"RESUME"
-                style:UIAlertActionStyleDefault
-                handler:^(UIAlertAction *action) {
-
-                    dospad_resume();
-
-                }]];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:@"CONTROLS"
-                style:UIAlertActionStyleDefault
-                handler:^(UIAlertAction *action) {
-
-                    [self mkShowControls];
-
-                }]];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:@"TOGGLE CRT FX"
-                style:UIAlertActionStyleDefault
-                handler:^(UIAlertAction *action) {
-
-                    BOOL enabled =
-                        [[NSUserDefaults standardUserDefaults]
-                         boolForKey:@"MKEnhanced"];
-
-                    [[NSUserDefaults standardUserDefaults]
-                     setBool:!enabled
-                     forKey:@"MKEnhanced"];
-
-                    [[NSUserDefaults standardUserDefaults]
-                     synchronize];
-
-                    [self mkApplyVisualFilter];
-
-                    dospad_resume();
-
-                }]];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:@"EXIT GAME"
-                style:UIAlertActionStyleDestructive
-                handler:^(UIAlertAction *action) {
-
-                    // Current iDOS cannot cleanly stop and restart
-                    // the DOSBox thread with another package.
-                    // Closing here is safer than corrupting state.
-                    exit(0);
-
-                }]];
-
-
-              [self
-               presentViewController:alert
-               animated:YES
-               completion:nil];
-          }
-
-          // ===== END MKTRILOGY_GAME_UI =====
+          // ===== END MKTRILOGY_TOUCH_CONTROLS =====
 
           '''
 
-          data = data.replace(
-              methods_marker,
-              methods + methods_marker,
+          text = text.replace(
+              marker,
+              methods + marker,
               1
           )
 
 
-          layout_marker = '''\
+          layout_old = '''
+          	_rootContainer = [self createSceneView:_currentScene frame:viewRect];
+          	[self.view addSubview:_rootContainer];
           	[self updateScreen];
-          }'''
+          }
+          '''
 
-          if layout_marker not in data:
-              # spaces can vary
-              layout_marker = '\t[self updateScreen];\n}'
+          layout_new = '''
+          	_rootContainer = [self createSceneView:_currentScene frame:viewRect];
+          	[self.view addSubview:_rootContainer];
+          	[self updateScreen];
 
-          if layout_marker not in data:
-              raise SystemExit(
-                  "ERROR: updateScreen layout marker missing"
+              [self mkInstallControls];
+              [self mkApplyCRT];
+          }
+          '''
+
+          if layout_old not in text:
+
+              layout_old = (
+                  '\t_rootContainer = '
+                  '[self createSceneView:_currentScene frame:viewRect];\n'
+                  '\t[self.view addSubview:_rootContainer];\n'
+                  '\t[self updateScreen];\n'
+                  '}'
               )
 
-          replacement = '''\
-          	[self updateScreen];
+              layout_new = (
+                  '\t_rootContainer = '
+                  '[self createSceneView:_currentScene frame:viewRect];\n'
+                  '\t[self.view addSubview:_rootContainer];\n'
+                  '\t[self updateScreen];\n'
+                  '\n'
+                  '    [self mkInstallControls];\n'
+                  '    [self mkApplyCRT];\n'
+                  '}'
+              )
 
-              // MK Trilogy touch HUD
-              [self mkInstallGameHUD];
-              [self mkApplyVisualFilter];
-          }'''
 
-          data = data.replace(
-              layout_marker,
-              replacement,
+          if layout_old not in text:
+
+              raise SystemExit(
+                  "ERROR: LAYOUT PATCH MARKER NOT FOUND"
+              )
+
+
+          text = text.replace(
+              layout_old,
+              layout_new,
               1
           )
 
 
-          will_start_marker = '''\
-          	[[self findGamepad] applyConfiguration:_gamepadConfig];'''
+          emulator_old = '''
+          	[[self findGamepad] applyConfiguration:_gamepadConfig];
+          '''
 
-          if will_start_marker not in data:
+          emulator_new = '''
+              DPGamepad *mkOriginalGamepad =
+                  [self findGamepad];
+
+              if (mkOriginalGamepad)
+              {
+                  [mkOriginalGamepad
+                   applyConfiguration:
+                   _gamepadConfig];
+
+                  mkOriginalGamepad.hidden = YES;
+              }
+
+              [self mkInstallControls];
+              [self mkApplyCRT];
+          '''
+
+
+          if emulator_old not in text:
+
               raise SystemExit(
-                  "ERROR: gamepad apply marker missing"
+                  "ERROR: EMULATOR START PATCH MARKER NOT FOUND"
               )
 
-          will_start_replacement = '''\
-              DPGamepad *mkPad = [self findGamepad];
 
-              if (!mkPad)
-              {
-                  [self createGamepad];
-                  mkPad = [self findGamepad];
-              }
-
-              if (mkPad)
-              {
-                  [mkPad applyConfiguration:_gamepadConfig];
-                  mkPad.hidden = NO;
-                  mkPad.alpha = 0.76;
-              }
-
-              [self mkInstallGameHUD];
-              [self mkApplyVisualFilter];'''
-
-          data = data.replace(
-              will_start_marker,
-              will_start_replacement,
+          text = text.replace(
+              emulator_old,
+              emulator_new,
               1
           )
 
@@ -2082,15 +2275,17 @@ jobs:
               path,
               "w",
               encoding="utf-8"
-          ).write(data)
+          ).write(text)
+
 
           print(
-              "Touch gamepad + pause + CRT patch OK"
+              "MK touch controls + CRT FX installed"
           )
+
           PY
 
       # ==========================================================
-      # BRANDING
+      # APP NAME
       # ==========================================================
 
       - name: Apply app branding
@@ -2099,7 +2294,6 @@ jobs:
 
           PLIST="dospad/Resources/iDOS-Info.plist"
 
-          echo "===== INFO PLIST ====="
           test -f "$PLIST"
 
           plutil \
@@ -2112,24 +2306,14 @@ jobs:
             -string "MK Trilogy" \
             "$PLIST" || true
 
-          /usr/libexec/PlistBuddy \
-            -c "Delete :UISupportedInterfaceOrientations" \
-            "$PLIST" || true
+          echo
+          echo "===== PLIST ====="
 
-          /usr/libexec/PlistBuddy \
-            -c "Add :UISupportedInterfaceOrientations array" \
-            "$PLIST"
-
-          /usr/libexec/PlistBuddy \
-            -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationLandscapeLeft" \
-            "$PLIST"
-
-          /usr/libexec/PlistBuddy \
-            -c "Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationLandscapeRight" \
-            "$PLIST"
+          plutil -p "$PLIST" \
+            | head -60
 
       # ==========================================================
-      # GENERATE APP ICON
+      # ICON
       # ==========================================================
 
       - name: Generate MK Trilogy icon
@@ -2137,202 +2321,413 @@ jobs:
           set -e
 
           python3 <<'PY'
-          from PIL import Image, ImageDraw, ImageFont
+          from PIL import Image
+          from PIL import ImageDraw
+          from PIL import ImageFont
+
+          import glob
           import json
           import os
-          import glob
 
-          candidates = glob.glob(
-              "dospad/Resources/Assets.xcassets/*.appiconset"
+
+          sets = glob.glob(
+              "dospad/Resources/"
+              "Assets.xcassets/"
+              "*.appiconset"
           )
 
-          if not candidates:
+
+          if not sets:
+
               raise SystemExit(
-                  "ERROR: AppIcon set not found"
+                  "APP ICON SET NOT FOUND"
               )
 
-          appicon = candidates[0]
 
-          print("Using:", appicon)
+          appicon = sets[0]
 
-          for f in glob.glob(
-              os.path.join(appicon, "*.png")
+          print(
+              "Using icon set:",
+              appicon
+          )
+
+
+          for old in glob.glob(
+              os.path.join(
+                  appicon,
+                  "*.png"
+              )
           ):
-              os.remove(f)
+              os.remove(old)
+
 
           entries = [
-              ("iphone", "20x20", "2x", 40, "mk20-2.png"),
-              ("iphone", "20x20", "3x", 60, "mk20-3.png"),
-              ("iphone", "29x29", "2x", 58, "mk29-2.png"),
-              ("iphone", "29x29", "3x", 87, "mk29-3.png"),
-              ("iphone", "40x40", "2x", 80, "mk40-2.png"),
-              ("iphone", "40x40", "3x", 120, "mk40-3.png"),
-              ("iphone", "60x60", "2x", 120, "mk60-2.png"),
-              ("iphone", "60x60", "3x", 180, "mk60-3.png"),
-              ("ios-marketing", "1024x1024", "1x", 1024, "mk1024.png"),
+
+              (
+                  "iphone",
+                  "20x20",
+                  "2x",
+                  40,
+                  "Icon20-2.png"
+              ),
+
+              (
+                  "iphone",
+                  "20x20",
+                  "3x",
+                  60,
+                  "Icon20-3.png"
+              ),
+
+              (
+                  "iphone",
+                  "29x29",
+                  "2x",
+                  58,
+                  "Icon29-2.png"
+              ),
+
+              (
+                  "iphone",
+                  "29x29",
+                  "3x",
+                  87,
+                  "Icon29-3.png"
+              ),
+
+              (
+                  "iphone",
+                  "40x40",
+                  "2x",
+                  80,
+                  "Icon40-2.png"
+              ),
+
+              (
+                  "iphone",
+                  "40x40",
+                  "3x",
+                  120,
+                  "Icon40-3.png"
+              ),
+
+              (
+                  "iphone",
+                  "60x60",
+                  "2x",
+                  120,
+                  "Icon60-2.png"
+              ),
+
+              (
+                  "iphone",
+                  "60x60",
+                  "3x",
+                  180,
+                  "Icon60-3.png"
+              ),
+
+              (
+                  "ios-marketing",
+                  "1024x1024",
+                  "1x",
+                  1024,
+                  "Icon1024.png"
+              )
           ]
 
 
-          def font(size):
-              paths = [
-                  "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-                  "/System/Library/Fonts/Supplemental/Arial.ttf",
+          def get_font(size):
+
+              options = [
+
+                  "/System/Library/Fonts/"
+                  "Supplemental/"
+                  "Arial Bold.ttf",
+
+                  "/System/Library/Fonts/"
+                  "Supplemental/"
+                  "Arial.ttf"
               ]
 
-              for p in paths:
-                  if os.path.exists(p):
-                      return ImageFont.truetype(
-                          p,
-                          size
+
+              for font_path in options:
+
+                  if os.path.exists(
+                      font_path
+                  ):
+
+                      return (
+                          ImageFont.truetype(
+                              font_path,
+                              size
+                          )
                       )
 
-              return ImageFont.load_default()
+
+              return (
+                  ImageFont.load_default()
+              )
 
 
-          def make_icon(px, output):
+          def create(px, filename):
+
               img = Image.new(
                   "RGB",
                   (px, px),
-                  (7, 7, 10)
+                  (7, 7, 9)
               )
 
-              draw = ImageDraw.Draw(img)
+
+              draw = ImageDraw.Draw(
+                  img
+              )
+
 
               for y in range(px):
-                  t = y / max(px - 1, 1)
 
-                  r = int(
-                      105 * (1 - t) +
-                      12 * t
+                  t = (
+                      y /
+                      max(
+                          px - 1,
+                          1
+                      )
                   )
 
-                  g = int(
-                      5 * (1 - t) +
-                      3 * t
+                  red = int(
+                      110 *
+                      (1 - t)
+                      +
+                      15 *
+                      t
                   )
 
-                  b = int(
-                      8 * (1 - t) +
-                      7 * t
+                  green = int(
+                      5 *
+                      (1 - t)
+                      +
+                      2 *
+                      t
                   )
+
+                  blue = int(
+                      8 *
+                      (1 - t)
+                      +
+                      5 *
+                      t
+                  )
+
 
                   draw.line(
-                      (0, y, px, y),
-                      fill=(r, g, b)
+                      (
+                          0,
+                          y,
+                          px,
+                          y
+                      ),
+                      fill=(
+                          red,
+                          green,
+                          blue
+                      )
                   )
 
 
-              outer = int(px * 0.09)
-              inner = int(px * 0.16)
+              margin = int(
+                  px * 0.10
+              )
+
 
               draw.ellipse(
                   (
-                      outer,
-                      outer,
-                      px - outer,
-                      px - outer
+                      margin,
+                      margin,
+                      px - margin,
+                      px - margin
                   ),
-                  fill=(10, 10, 13),
-                  outline=(225, 36, 32),
-                  width=max(2, int(px * 0.022))
+                  fill=(
+                      8,
+                      8,
+                      11
+                  ),
+                  outline=(
+                      230,
+                      40,
+                      35
+                  ),
+                  width=max(
+                      2,
+                      int(
+                          px * 0.025
+                      )
+                  )
               )
 
-              draw.ellipse(
+
+              big_font = get_font(
+                  max(
+                      12,
+                      int(
+                          px * 0.31
+                      )
+                  )
+              )
+
+
+              small_font = get_font(
+                  max(
+                      8,
+                      int(
+                          px * 0.075
+                      )
+                  )
+              )
+
+
+              text = "MK"
+
+
+              bbox = draw.textbbox(
                   (
-                      inner,
-                      inner,
-                      px - inner,
-                      px - inner
+                      0,
+                      0
                   ),
-                  outline=(120, 15, 15),
-                  width=max(2, int(px * 0.010))
+                  text,
+                  font=big_font
               )
 
 
-              big = font(
-                  max(12, int(px * 0.31))
+              tw = (
+                  bbox[2] -
+                  bbox[0]
               )
 
-              small = font(
-                  max(8, int(px * 0.075))
+              th = (
+                  bbox[3] -
+                  bbox[1]
               )
 
-              mk = "MK"
-
-              box = draw.textbbox(
-                  (0, 0),
-                  mk,
-                  font=big
-              )
-
-              tw = box[2] - box[0]
-              th = box[3] - box[1]
 
               draw.text(
                   (
-                      (px - tw) / 2,
-                      px * 0.38 - th / 2
+                      (
+                          px -
+                          tw
+                      ) / 2,
+                      px * 0.39 -
+                      th / 2
                   ),
-                  mk,
-                  font=big,
-                  fill=(247, 247, 247)
+                  text,
+                  font=big_font,
+                  fill=(
+                      250,
+                      250,
+                      250
+                  )
               )
 
 
-              word = "TRILOGY"
+              sub = "TRILOGY"
 
-              box = draw.textbbox(
-                  (0, 0),
-                  word,
-                  font=small
+
+              bbox = draw.textbbox(
+                  (
+                      0,
+                      0
+                  ),
+                  sub,
+                  font=small_font
               )
 
-              tw = box[2] - box[0]
+
+              sw = (
+                  bbox[2] -
+                  bbox[0]
+              )
+
 
               draw.text(
                   (
-                      (px - tw) / 2,
-                      px * 0.69
+                      (
+                          px -
+                          sw
+                      ) / 2,
+                      px * 0.68
                   ),
-                  word,
-                  font=small,
-                  fill=(245, 75, 70)
+                  sub,
+                  font=small_font,
+                  fill=(
+                      245,
+                      75,
+                      70
+                  )
               )
+
 
               img.save(
-                  output,
+                  filename,
                   "PNG"
               )
 
 
           images = []
 
-          for idiom, size, scale, px, filename in entries:
-              path = os.path.join(
+
+          for (
+              idiom,
+              size,
+              scale,
+              pixels,
+              filename
+          ) in entries:
+
+              full = os.path.join(
                   appicon,
                   filename
               )
 
-              make_icon(
-                  px,
-                  path
+
+              create(
+                  pixels,
+                  full
               )
 
+
               images.append({
-                  "idiom": idiom,
-                  "size": size,
-                  "scale": scale,
-                  "filename": filename
+
+                  "idiom":
+                      idiom,
+
+                  "size":
+                      size,
+
+                  "scale":
+                      scale,
+
+                  "filename":
+                      filename
+
               })
 
 
           contents = {
-              "images": images,
+
+              "images":
+                  images,
+
               "info": {
-                  "author": "xcode",
-                  "version": 1
+
+                  "author":
+                      "xcode",
+
+                  "version":
+                      1
+
               }
+
           }
+
 
           with open(
               os.path.join(
@@ -2341,19 +2736,51 @@ jobs:
               ),
               "w"
           ) as f:
+
               json.dump(
                   contents,
                   f,
                   indent=2
               )
 
+
           print(
-              "New app icon generated"
+              "MK icon generated"
           )
+
           PY
 
       # ==========================================================
-      # BUILD iDOS
+      # DEBUG PATCH CHECK
+      # ==========================================================
+
+      - name: Verify patches
+        run: |
+          set -e
+
+          echo
+          echo "===== AUTOBOOT ====="
+
+          grep -n \
+            "MKTRILOGY_BOOT_PATCH" \
+            dospad/dospad/Main/DOSPadEmulator.m
+
+          echo
+          echo "===== MAIN MENU ====="
+
+          grep -n \
+            "MKTRILOGY_MAIN_MENU" \
+            dospad/dospad/Main/DPAppDelegate.m
+
+          echo
+          echo "===== TOUCH ====="
+
+          grep -n \
+            "MKTRILOGY_TOUCH_CONTROLS" \
+            dospad/dospad/Main/DPEmulatorViewController.m
+
+      # ==========================================================
+      # BUILD
       # ==========================================================
 
       - name: Build MK Trilogy engine
@@ -2378,19 +2805,21 @@ jobs:
             | tee output/xcodebuild.log
 
       # ==========================================================
-      # FIND APP
+      # LOCATE APP
       # ==========================================================
 
       - name: Locate built app
         run: |
           set -e
 
-          echo "===== BUILT APPS ====="
+          echo
+          echo "===== APPS ====="
 
           find build \
             -type d \
             -name "*.app" \
             -print
+
 
           APP=$(
             find build/Build/Products \
@@ -2398,6 +2827,7 @@ jobs:
               -name "iDOS.app" \
               | head -1
           )
+
 
           if [ -z "$APP" ]; then
 
@@ -2410,91 +2840,143 @@ jobs:
 
           fi
 
+
           if [ -z "$APP" ]; then
-            echo "ERROR: APP NOT FOUND"
+
+            echo "ERROR:"
+            echo "APP NOT FOUND"
+
             exit 1
+
           fi
 
-          echo "$APP" > output/app-path.txt
 
+          echo "$APP" \
+            > output/app-path.txt
+
+
+          echo
           echo "APP=$APP"
 
       # ==========================================================
-      # BUNDLE REAL MK1 + MK2 + MK3
+      # PUT REAL GAMES INSIDE APP
       # ==========================================================
 
-      - name: Put all three real games inside IPA
+      - name: Put real MK1 MK2 MK3 inside app
         run: |
           set -e
 
-          APP="$(cat output/app-path.txt)"
+          APP=$(
+            cat output/app-path.txt
+          )
 
-          rm -rf "$APP/MKGames"
+          rm -rf \
+            "$APP/MKGames"
 
-          mkdir -p "$APP/MKGames/mk1"
-          mkdir -p "$APP/MKGames/mk2"
-          mkdir -p "$APP/MKGames/mk3"
+          mkdir -p \
+            "$APP/MKGames/mk1"
 
-          cp -R games/mk1/. \
+          mkdir -p \
+            "$APP/MKGames/mk2"
+
+          mkdir -p \
+            "$APP/MKGames/mk3"
+
+
+          cp -R \
+            games/mk1/. \
             "$APP/MKGames/mk1/"
 
-          cp -R games/mk2/. \
+
+          cp -R \
+            games/mk2/. \
             "$APP/MKGames/mk2/"
 
-          cp -R games/mk3/. \
+
+          cp -R \
+            games/mk3/. \
             "$APP/MKGames/mk3/"
 
 
-          echo "===== REAL EXES INSIDE APP ====="
+          echo
+          echo "===== BUNDLED EXES ====="
 
           find "$APP/MKGames" \
             -type f \
             \( \
               -iname "MK1.EXE" \
-              -o -iname "MK2.EXE" \
-              -o -iname "MK3.EXE" \
+              -o \
+              -iname "MK2.EXE" \
+              -o \
+              -iname "MK3.EXE" \
             \) \
             -print
 
 
-          test -n "$(
-            find "$APP/MKGames/mk1" \
+          MK1=$(
+            find \
+              "$APP/MKGames/mk1" \
               -maxdepth 1 \
               -type f \
               -iname "MK1.EXE" \
               | head -1
-          )"
+          )
 
-          test -n "$(
-            find "$APP/MKGames/mk2" \
+          MK2=$(
+            find \
+              "$APP/MKGames/mk2" \
               -maxdepth 1 \
               -type f \
               -iname "MK2.EXE" \
               | head -1
-          )"
+          )
 
-          test -n "$(
-            find "$APP/MKGames/mk3" \
+          MK3=$(
+            find \
+              "$APP/MKGames/mk3" \
               -maxdepth 1 \
               -type f \
               -iname "MK3.EXE" \
               | head -1
+          )
+
+
+          test -n "$MK1"
+          test -n "$MK2"
+          test -n "$MK3"
+
+
+          echo
+          echo "MK1 FILES: $(
+            find "$APP/MKGames/mk1" \
+              -type f \
+              | wc -l
           )"
 
+          echo "MK2 FILES: $(
+            find "$APP/MKGames/mk2" \
+              -type f \
+              | wc -l
+          )"
 
-          echo "MK1 bundled: $(find "$APP/MKGames/mk1" -type f | wc -l)"
-          echo "MK2 bundled: $(find "$APP/MKGames/mk2" -type f | wc -l)"
-          echo "MK3 bundled: $(find "$APP/MKGames/mk3" -type f | wc -l)"
+          echo "MK3 FILES: $(
+            find "$APP/MKGames/mk3" \
+              -type f \
+              | wc -l
+          )"
 
       # ==========================================================
-      # FINAL BRAND NAME
+      # FINAL PLIST
       # ==========================================================
 
-      - name: Finalize app plist
+      - name: Finalize Info plist
         run: |
           set -e
 
-          APP="$(cat output/app-path.txt)"
+          APP=$(
+            cat output/app-path.txt
+          )
+
           PLIST="$APP/Info.plist"
 
           plutil \
@@ -2507,70 +2989,88 @@ jobs:
             -string "com.mkremastered.trilogy" \
             "$PLIST"
 
+          echo
           echo "===== FINAL INFO ====="
-          plutil -p "$PLIST" | head -50
+
+          plutil -p "$PLIST" \
+            | head -60
 
       # ==========================================================
-      # BUILD REPORT
+      # BUILD INFO
       # ==========================================================
 
-      - name: Create build report
+      - name: Create build info
         run: |
           set -e
 
-          APP="$(cat output/app-path.txt)"
+          APP=$(
+            cat output/app-path.txt
+          )
 
           {
             echo "======================================"
             echo "MORTAL KOMBAT REMASTERED TRILOGY"
-            echo "REAL CLASSIC BUILD"
             echo "======================================"
             echo
+            echo "REAL DOS CLASSIC BUILD"
+            echo
             echo "FEATURES:"
-            echo "REAL MK1.EXE"
-            echo "REAL MK2.EXE"
-            echo "REAL MK3.EXE"
-            echo "TRILOGY NATIVE MENU"
-            echo "TOUCH GAMEPAD"
-            echo "GAME-SPECIFIC KEY MAPPINGS"
-            echo "PAUSE MENU"
-            echo "CLASSIC FILTER"
-            echo "CRT+ FILTER"
-            echo "CUSTOM APP ICON"
-            echo "PERSISTENT GAME FOLDERS"
-            echo "MK3 CUE/CD AUDIO AUTO-MOUNT ATTEMPT"
             echo
-            echo "COUNTS:"
-            echo "MK1=$(find "$APP/MKGames/mk1" -type f | wc -l)"
-            echo "MK2=$(find "$APP/MKGames/mk2" -type f | wc -l)"
-            echo "MK3=$(find "$APP/MKGames/mk3" -type f | wc -l)"
+            echo "- REAL MK1.EXE"
+            echo "- REAL MK2.EXE"
+            echo "- REAL MK3.EXE"
+            echo "- TRILOGY MAIN MENU"
+            echo "- CUSTOM APP ICON"
+            echo "- CUSTOM TOUCH CONTROLS"
+            echo "- MK1 CORRECT KEYBOARD MAPPING"
+            echo "- MK2 NUMPAD MAPPING"
+            echo "- MK3 NUMPAD + RUN MAPPING"
+            echo "- CLASSIC DISPLAY"
+            echo "- CRT+ FX"
+            echo "- MK3 CUE MOUNT ATTEMPT"
             echo
-            echo "IMPORTANT:"
-            echo "CRT+ is an iOS display filter."
-            echo "It is not the future full remaster engine."
-            echo
-            echo "The real Remastered and First Person engines"
-            echo "will be added after the Classic trilogy is stable."
-          } > output/BUILD-INFO.txt
+            echo "FILES:"
+            echo "MK1=$(
+              find "$APP/MKGames/mk1" \
+                -type f \
+                | wc -l
+            )"
+            echo "MK2=$(
+              find "$APP/MKGames/mk2" \
+                -type f \
+                | wc -l
+            )"
+            echo "MK3=$(
+              find "$APP/MKGames/mk3" \
+                -type f \
+                | wc -l
+            )"
+          } \
+          > output/BUILD-INFO.txt
 
-          cat output/BUILD-INFO.txt
+          cat \
+            output/BUILD-INFO.txt
 
       # ==========================================================
-      # PACKAGE IPA
+      # IPA
       # ==========================================================
 
       - name: Create IPA
         run: |
           set -e
 
-          APP="$(cat output/app-path.txt)"
+          APP=$(
+            cat output/app-path.txt
+          )
 
           rm -rf Payload
-          mkdir -p Payload
+
+          mkdir Payload
 
           cp -R \
             "$APP" \
             Payload/
+
 
           ditto \
             -c \
@@ -2578,37 +3078,38 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Remastered-Trilogy-REAL-Classic.ipa
+            output/MK-Remastered-Trilogy-REAL.ipa
+
 
           echo
-          echo "===== IPA CREATED ====="
+          echo "===== FINAL IPA ====="
 
           ls -lh \
-            output/MK-Remastered-Trilogy-REAL-Classic.ipa
+            output/MK-Remastered-Trilogy-REAL.ipa
 
       # ==========================================================
-      # UPLOAD SUCCESS
+      # SUCCESS
       # ==========================================================
 
-      - name: Upload REAL Trilogy IPA
+      - name: Upload REAL MK Trilogy IPA
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Remastered-Trilogy-REAL-Classic
+          name: MK-Remastered-Trilogy-REAL
           path: |
-            output/MK-Remastered-Trilogy-REAL-Classic.ipa
+            output/MK-Remastered-Trilogy-REAL.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
       # ==========================================================
-      # UPLOAD LOG IF FAILED
+      # FAILURE
       # ==========================================================
 
-      - name: Upload build failure log
+      - name: Upload failure logs
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Build-FAIL
+          name: MK-Trilogy-FAIL
           path: |
             output/xcodebuild.log
             output/BUILD-INFO.txt
