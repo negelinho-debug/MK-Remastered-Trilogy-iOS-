@@ -1,4 +1,4 @@
-name: Extract MK Remastered Trilogy
+name: Extract MK1 + MK2 + MK3
 
 on:
   workflow_dispatch:
@@ -8,7 +8,6 @@ permissions:
 
 jobs:
   extract:
-    name: Extract MK1 + MK2 + MK3
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -16,89 +15,137 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install extraction tools
+      - name: Install tools
         run: |
           sudo apt-get update
           sudo apt-get install -y innoextract p7zip-full zip
+          mkdir -p pool extracted artifacts release-assets
 
-      - name: Prepare folders
+      # ==========================================================
+      # FIND EVERY EXE IN REPOSITORY
+      # ==========================================================
+
+      - name: Find EXE files in repository
         run: |
-          mkdir -p input/mk1
-          mkdir -p input/mk2
-          mkdir -p input/mk3
-          mkdir -p release-assets
-          mkdir -p extracted
-          mkdir -p artifacts
+          echo "===== EXE FILES IN REPOSITORY ====="
 
-      - name: Find installers already in repository
-        run: |
-          echo "===== ALL EXE FILES IN REPOSITORY ====="
-          find . -type f -iname "*.exe" -not -path "./.git/*" -print
+          find . \
+            -type f \
+            -iname "*.exe" \
+            -not -path "./.git/*" \
+            -print
 
-          for PART in mk1 mk2 mk3; do
-            FILE=$(find "installers/$PART" -type f -iname "*.exe" 2>/dev/null | head -1 || true)
+          find . \
+            -type f \
+            -iname "*.exe" \
+            -not -path "./.git/*" \
+            -exec cp {} pool/ \;
 
-            if [ -n "$FILE" ]; then
-              echo "Found $PART: $FILE"
-              cp "$FILE" "input/$PART/installer.exe"
-            else
-              echo "$PART not found in repository"
-            fi
-          done
+      # ==========================================================
+      # DOWNLOAD BIG EXE FROM RELEASE
+      # ==========================================================
 
-      - name: Download EXE from latest Release
+      - name: Download EXE from Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
+          echo "===== RELEASES ====="
+
+          gh release list || true
+
+          TAG=$(gh release list \
+            --limit 1 \
+            --json tagName \
+            --jq '.[0].tagName' || true)
 
           if [ -n "$TAG" ]; then
-            echo "Latest release: $TAG"
+
+            echo "Using release: $TAG"
 
             gh release download "$TAG" \
               --dir release-assets \
               --pattern "*.exe" || true
-          else
-            echo "No release found"
+
           fi
 
-          echo "===== RELEASE FILES ====="
-          find release-assets -type f -maxdepth 1 -print || true
+          echo "===== RELEASE EXE ====="
 
-      - name: Put Release installer into missing MK slot
+          find release-assets \
+            -type f \
+            -iname "*.exe" \
+            -print || true
+
+          find release-assets \
+            -type f \
+            -iname "*.exe" \
+            -exec cp {} pool/ \; || true
+
+      # ==========================================================
+      # SHOW EVERYTHING FOUND
+      # ==========================================================
+
+      - name: Show installer pool
         run: |
-          MISSING=""
+          echo "===== INSTALLER POOL ====="
 
-          for PART in mk1 mk2 mk3; do
-            if [ ! -f "input/$PART/installer.exe" ]; then
-              MISSING="$MISSING $PART"
-            fi
-          done
+          find pool \
+            -maxdepth 1 \
+            -type f \
+            -iname "*.exe" \
+            -print \
+            | sort
 
-          COUNT=$(echo "$MISSING" | wc -w)
-          RELEASE_EXE=$(find release-assets -maxdepth 1 -type f -iname "*.exe" | head -1 || true)
+          COUNT=$(find pool \
+            -maxdepth 1 \
+            -type f \
+            -iname "*.exe" \
+            | wc -l)
 
-          echo "Missing:$MISSING"
+          echo "EXE count: $COUNT"
 
-          if [ "$COUNT" = "1" ] && [ -n "$RELEASE_EXE" ]; then
-            PART=$(echo "$MISSING" | xargs)
-            echo "Release installer assigned to $PART"
-            cp "$RELEASE_EXE" "input/$PART/installer.exe"
+          if [ "$COUNT" -lt 3 ]; then
+            echo "ERROR: Need 3 installers but found $COUNT"
+            exit 1
           fi
 
-      - name: Check all three installers
+      # ==========================================================
+      # ASSIGN MK1 / MK2 / MK3
+      #
+      # GOG names normally sort like:
+      # setup_mortal_kombat_2.0.0.2.exe
+      # setup_mortal_kombat_2_2.0.0.2.exe
+      # setup_mortal_kombat_3_2.0.0.2.exe
+      # ==========================================================
+
+      - name: Assign installers
         run: |
-          echo "===== INPUT ====="
+          mapfile -t FILES < <(
+            find pool \
+              -maxdepth 1 \
+              -type f \
+              -iname "*.exe" \
+              | sort
+          )
 
-          for PART in mk1 mk2 mk3; do
-            if [ ! -f "input/$PART/installer.exe" ]; then
-              echo "ERROR: installer for $PART is missing!"
-              exit 1
-            fi
+          MK1="${FILES[0]}"
+          MK2="${FILES[1]}"
+          MK3="${FILES[2]}"
 
-            echo "$PART:"
-            ls -lh "input/$PART/installer.exe"
-          done
+          echo "============================"
+          echo "MK1 = $MK1"
+          echo "MK2 = $MK2"
+          echo "MK3 = $MK3"
+          echo "============================"
+
+          cp "$MK1" mk1.exe
+          cp "$MK2" mk2.exe
+          cp "$MK3" mk3.exe
+
+          ls -lh mk1.exe mk2.exe mk3.exe
+
+      # ==========================================================
+      # EXTRACT MK1
+      # ==========================================================
 
       - name: Extract Mortal Kombat 1
         run: |
@@ -107,12 +154,16 @@ jobs:
           innoextract \
             --extract \
             --output-dir extracted/mk1 \
-            input/mk1/installer.exe \
+            mk1.exe \
           || \
           7z x \
-            input/mk1/installer.exe \
+            mk1.exe \
             -oextracted/mk1 \
             -y
+
+      # ==========================================================
+      # EXTRACT MK2
+      # ==========================================================
 
       - name: Extract Mortal Kombat 2
         run: |
@@ -121,12 +172,16 @@ jobs:
           innoextract \
             --extract \
             --output-dir extracted/mk2 \
-            input/mk2/installer.exe \
+            mk2.exe \
           || \
           7z x \
-            input/mk2/installer.exe \
+            mk2.exe \
             -oextracted/mk2 \
             -y
+
+      # ==========================================================
+      # EXTRACT MK3
+      # ==========================================================
 
       - name: Extract Mortal Kombat 3
         run: |
@@ -135,41 +190,65 @@ jobs:
           innoextract \
             --extract \
             --output-dir extracted/mk3 \
-            input/mk3/installer.exe \
+            mk3.exe \
           || \
           7z x \
-            input/mk3/installer.exe \
+            mk3.exe \
             -oextracted/mk3 \
             -y
 
-      - name: Show extracted files
+      # ==========================================================
+      # FILE LIST
+      # ==========================================================
+
+      - name: Create file list
         run: |
-          echo "===== MK1 ====="
-          find extracted/mk1 -maxdepth 4 -type f | head -200
+          echo "===== MK1 =====" > artifacts/file-list.txt
+          find extracted/mk1 -type f >> artifacts/file-list.txt
 
-          echo "===== MK2 ====="
-          find extracted/mk2 -maxdepth 4 -type f | head -200
+          echo "" >> artifacts/file-list.txt
+          echo "===== MK2 =====" >> artifacts/file-list.txt
+          find extracted/mk2 -type f >> artifacts/file-list.txt
 
-          echo "===== MK3 ====="
-          find extracted/mk3 -maxdepth 4 -type f | head -200
+          echo "" >> artifacts/file-list.txt
+          echo "===== MK3 =====" >> artifacts/file-list.txt
+          find extracted/mk3 -type f >> artifacts/file-list.txt
 
-          find extracted -type f > artifacts/file-list.txt
+          echo "===== TOTAL ====="
+          find extracted -type f | wc -l
 
-      - name: Make ZIP files
+      # ==========================================================
+      # ZIP
+      # ==========================================================
+
+      - name: Create extracted ZIPs
         run: |
           cd extracted
 
-          zip -r ../artifacts/MK1_EXTRACTED.zip mk1
-          zip -r ../artifacts/MK2_EXTRACTED.zip mk2
-          zip -r ../artifacts/MK3_EXTRACTED.zip mk3
+          zip -r \
+            ../artifacts/MK1_EXTRACTED.zip \
+            mk1
+
+          zip -r \
+            ../artifacts/MK2_EXTRACTED.zip \
+            mk2
+
+          zip -r \
+            ../artifacts/MK3_EXTRACTED.zip \
+            mk3
 
           cd ..
 
+          echo "===== RESULT ====="
           ls -lh artifacts
 
-      - name: Upload extracted trilogy
+      # ==========================================================
+      # ARTIFACT
+      # ==========================================================
+
+      - name: Upload trilogy
         uses: actions/upload-artifact@v4
         with:
           name: MK-Remastered-Trilogy-Extracted
-          path: artifacts/*
+          path: artifacts/
           compression-level: 0
