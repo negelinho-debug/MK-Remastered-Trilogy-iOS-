@@ -1,0 +1,175 @@
+name: Extract MK Remastered Trilogy
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    name: Extract MK1 + MK2 + MK3
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install extraction tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y innoextract p7zip-full zip
+
+      - name: Prepare folders
+        run: |
+          mkdir -p input/mk1
+          mkdir -p input/mk2
+          mkdir -p input/mk3
+          mkdir -p release-assets
+          mkdir -p extracted
+          mkdir -p artifacts
+
+      - name: Find installers already in repository
+        run: |
+          echo "===== ALL EXE FILES IN REPOSITORY ====="
+          find . -type f -iname "*.exe" -not -path "./.git/*" -print
+
+          for PART in mk1 mk2 mk3; do
+            FILE=$(find "installers/$PART" -type f -iname "*.exe" 2>/dev/null | head -1 || true)
+
+            if [ -n "$FILE" ]; then
+              echo "Found $PART: $FILE"
+              cp "$FILE" "input/$PART/installer.exe"
+            else
+              echo "$PART not found in repository"
+            fi
+          done
+
+      - name: Download EXE from latest Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
+
+          if [ -n "$TAG" ]; then
+            echo "Latest release: $TAG"
+
+            gh release download "$TAG" \
+              --dir release-assets \
+              --pattern "*.exe" || true
+          else
+            echo "No release found"
+          fi
+
+          echo "===== RELEASE FILES ====="
+          find release-assets -type f -maxdepth 1 -print || true
+
+      - name: Put Release installer into missing MK slot
+        run: |
+          MISSING=""
+
+          for PART in mk1 mk2 mk3; do
+            if [ ! -f "input/$PART/installer.exe" ]; then
+              MISSING="$MISSING $PART"
+            fi
+          done
+
+          COUNT=$(echo "$MISSING" | wc -w)
+          RELEASE_EXE=$(find release-assets -maxdepth 1 -type f -iname "*.exe" | head -1 || true)
+
+          echo "Missing:$MISSING"
+
+          if [ "$COUNT" = "1" ] && [ -n "$RELEASE_EXE" ]; then
+            PART=$(echo "$MISSING" | xargs)
+            echo "Release installer assigned to $PART"
+            cp "$RELEASE_EXE" "input/$PART/installer.exe"
+          fi
+
+      - name: Check all three installers
+        run: |
+          echo "===== INPUT ====="
+
+          for PART in mk1 mk2 mk3; do
+            if [ ! -f "input/$PART/installer.exe" ]; then
+              echo "ERROR: installer for $PART is missing!"
+              exit 1
+            fi
+
+            echo "$PART:"
+            ls -lh "input/$PART/installer.exe"
+          done
+
+      - name: Extract Mortal Kombat 1
+        run: |
+          mkdir -p extracted/mk1
+
+          innoextract \
+            --extract \
+            --output-dir extracted/mk1 \
+            input/mk1/installer.exe \
+          || \
+          7z x \
+            input/mk1/installer.exe \
+            -oextracted/mk1 \
+            -y
+
+      - name: Extract Mortal Kombat 2
+        run: |
+          mkdir -p extracted/mk2
+
+          innoextract \
+            --extract \
+            --output-dir extracted/mk2 \
+            input/mk2/installer.exe \
+          || \
+          7z x \
+            input/mk2/installer.exe \
+            -oextracted/mk2 \
+            -y
+
+      - name: Extract Mortal Kombat 3
+        run: |
+          mkdir -p extracted/mk3
+
+          innoextract \
+            --extract \
+            --output-dir extracted/mk3 \
+            input/mk3/installer.exe \
+          || \
+          7z x \
+            input/mk3/installer.exe \
+            -oextracted/mk3 \
+            -y
+
+      - name: Show extracted files
+        run: |
+          echo "===== MK1 ====="
+          find extracted/mk1 -maxdepth 4 -type f | head -200
+
+          echo "===== MK2 ====="
+          find extracted/mk2 -maxdepth 4 -type f | head -200
+
+          echo "===== MK3 ====="
+          find extracted/mk3 -maxdepth 4 -type f | head -200
+
+          find extracted -type f > artifacts/file-list.txt
+
+      - name: Make ZIP files
+        run: |
+          cd extracted
+
+          zip -r ../artifacts/MK1_EXTRACTED.zip mk1
+          zip -r ../artifacts/MK2_EXTRACTED.zip mk2
+          zip -r ../artifacts/MK3_EXTRACTED.zip mk3
+
+          cd ..
+
+          ls -lh artifacts
+
+      - name: Upload extracted trilogy
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK-Remastered-Trilogy-Extracted
+          path: artifacts/*
+          compression-level: 0
