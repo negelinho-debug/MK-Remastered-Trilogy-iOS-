@@ -1,0 +1,256 @@
+name: Build MK Trilogy Ready Assets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-assets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y innoextract p7zip-full zip rsync
+          mkdir -p pool
+          mkdir -p release-assets
+          mkdir -p extracted
+          mkdir -p assets
+          mkdir -p artifacts
+
+      # ==========================================================
+      # COLLECT EXE FILES FROM REPOSITORY
+      # ==========================================================
+
+      - name: Collect EXE files from repository
+        run: |
+          echo "===== EXE FILES IN REPOSITORY ====="
+          find . \
+            -type f \
+            -iname "*.exe" \
+            -not -path "./.git/*" \
+            -print \
+            | sort \
+            | tee repo-exes.txt
+
+          i=1
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            cp "$FILE" "pool/repo_${i}.exe"
+            i=$((i+1))
+          done < repo-exes.txt
+
+      # ==========================================================
+      # DOWNLOAD EXE FILES FROM LATEST RELEASE
+      # ==========================================================
+
+      - name: Download EXE files from latest Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "===== AVAILABLE RELEASES ====="
+          gh release list || true
+
+          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName' || true)
+
+          if [ -n "$TAG" ]; then
+            echo "Using release: $TAG"
+            gh release download "$TAG" --dir release-assets --pattern "*.exe" || true
+          else
+            echo "No release found"
+          fi
+
+          echo "===== EXE FILES FROM RELEASE ====="
+          find release-assets \
+            -maxdepth 1 \
+            -type f \
+            -iname "*.exe" \
+            -print \
+            | sort \
+            | tee release-exes.txt || true
+
+          i=1
+          if [ -f release-exes.txt ]; then
+            while IFS= read -r FILE; do
+              [ -z "$FILE" ] && continue
+              cp "$FILE" "pool/release_${i}.exe"
+              i=$((i+1))
+            done < release-exes.txt
+          fi
+
+      # ==========================================================
+      # VERIFY EXE COUNT
+      # ==========================================================
+
+      - name: Verify installer pool
+        run: |
+          echo "===== INSTALLER POOL ====="
+          find pool \
+            -maxdepth 1 \
+            -type f \
+            -iname "*.exe" \
+            -print \
+            | sort
+
+          COUNT=$(find pool -maxdepth 1 -type f -iname "*.exe" | wc -l)
+          echo "EXE count: $COUNT"
+
+          if [ "$COUNT" -lt 3 ]; then
+            echo "ERROR: Need at least 3 EXE installers but found $COUNT"
+            exit 1
+          fi
+
+      # ==========================================================
+      # EXTRACT ALL EXE FILES
+      # ==========================================================
+
+      - name: Extract all installers
+        run: |
+          n=1
+          find pool \
+            -maxdepth 1 \
+            -type f \
+            -iname "*.exe" \
+            | sort > all-exes.txt
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            DEST="extracted/pkg${n}"
+            mkdir -p "$DEST"
+
+            echo "===================================="
+            echo "EXTRACTING: $FILE"
+            echo "DESTINATION: $DEST"
+            echo "===================================="
+
+            innoextract \
+              --extract \
+              --output-dir "$DEST" \
+              "$FILE" \
+            || \
+            7z x \
+              "$FILE" \
+              "-o$DEST" \
+              -y
+
+            n=$((n+1))
+          done < all-exes.txt
+
+      # ==========================================================
+      # FIND THE REAL GAME FOLDERS
+      # ==========================================================
+
+      - name: Find actual mk1 mk2 mk3 folders
+        run: |
+          MK1_SRC=$(find extracted -type d -path "*/app/mk1" | head -1 || true)
+          MK2_SRC=$(find extracted -type d -path "*/app/mk2" | head -1 || true)
+          MK3_SRC=$(find extracted -type d -path "*/app/mk3" | head -1 || true)
+
+          echo "MK1_SRC=$MK1_SRC"
+          echo "MK2_SRC=$MK2_SRC"
+          echo "MK3_SRC=$MK3_SRC"
+
+          if [ -z "$MK1_SRC" ]; then
+            echo "ERROR: app/mk1 not found"
+            exit 1
+          fi
+
+          if [ -z "$MK2_SRC" ]; then
+            echo "ERROR: app/mk2 not found"
+            exit 1
+          fi
+
+          if [ -z "$MK3_SRC" ]; then
+            echo "ERROR: app/mk3 not found"
+            exit 1
+          fi
+
+          echo "MK1_SRC=$MK1_SRC" > found-sources.env
+          echo "MK2_SRC=$MK2_SRC" >> found-sources.env
+          echo "MK3_SRC=$MK3_SRC" >> found-sources.env
+
+          cat found-sources.env
+
+      # ==========================================================
+      # NORMALIZE INTO assets/mk1 mk2 mk3
+      # ==========================================================
+
+      - name: Build normalized assets folders
+        run: |
+          source found-sources.env
+
+          mkdir -p assets/mk1
+          mkdir -p assets/mk2
+          mkdir -p assets/mk3
+
+          rsync -a "$MK1_SRC/" assets/mk1/
+          rsync -a "$MK2_SRC/" assets/mk2/
+          rsync -a "$MK3_SRC/" assets/mk3/
+
+          echo "===== NORMALIZED ASSETS ====="
+          find assets -maxdepth 2 -type d | sort
+
+      # ==========================================================
+      # CREATE MANIFESTS
+      # ==========================================================
+
+      - name: Create file lists
+        run: |
+          {
+            echo "===== MK1 ====="
+            find assets/mk1 -type f | sort
+            echo
+            echo "===== MK2 ====="
+            find assets/mk2 -type f | sort
+            echo
+            echo "===== MK3 ====="
+            find assets/mk3 -type f | sort
+          } > artifacts/file-list-normalized.txt
+
+          {
+            echo "===== SOURCES ====="
+            cat found-sources.env
+          } > artifacts/sources.txt
+
+          echo "===== COUNTS =====" > artifacts/counts.txt
+          echo "MK1 files: $(find assets/mk1 -type f | wc -l)" >> artifacts/counts.txt
+          echo "MK2 files: $(find assets/mk2 -type f | wc -l)" >> artifacts/counts.txt
+          echo "MK3 files: $(find assets/mk3 -type f | wc -l)" >> artifacts/counts.txt
+          echo "TOTAL files: $(find assets -type f | wc -l)" >> artifacts/counts.txt
+
+          cat artifacts/counts.txt
+
+      # ==========================================================
+      # ZIP READY ASSETS
+      # ==========================================================
+
+      - name: Create ZIP packages
+        run: |
+          cd assets
+          zip -r ../artifacts/MK_TRILOGY_READY_ASSETS.zip mk1 mk2 mk3
+          zip -r ../artifacts/MK1_READY_ASSETS.zip mk1
+          zip -r ../artifacts/MK2_READY_ASSETS.zip mk2
+          zip -r ../artifacts/MK3_READY_ASSETS.zip mk3
+          cd ..
+
+          echo "===== ARTIFACT FILES ====="
+          ls -lh artifacts
+
+      # ==========================================================
+      # UPLOAD ARTIFACT
+      # ==========================================================
+
+      - name: Upload ready assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK-Trilogy-Ready-Assets
+          path: artifacts/
+          compression-level: 0
