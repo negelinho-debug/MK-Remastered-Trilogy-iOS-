@@ -1,0 +1,1094 @@
+name: Build MK Remastered Trilogy Playable
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: |
+          brew install xcodegen
+          xcodebuild -version
+          xcodegen --version
+
+      - name: Create folders
+        run: |
+          mkdir -p MKPlayable
+          mkdir -p MKPlayable/Models
+          mkdir -p MKPlayable/ViewControllers
+
+      # ==========================================================
+      # PROJECT
+      # ==========================================================
+
+      - name: Create project.yml
+        run: |
+          cat > project.yml <<'YAML'
+          name: MKPlayable
+
+          options:
+            bundleIdPrefix: com.mkremastered
+
+          settings:
+            base:
+              IPHONEOS_DEPLOYMENT_TARGET: "15.0"
+              SWIFT_VERSION: "5.0"
+              TARGETED_DEVICE_FAMILY: "1"
+              ENABLE_BITCODE: NO
+
+          targets:
+            MKPlayable:
+              type: application
+              platform: iOS
+              sources:
+                - path: MKPlayable
+              settings:
+                base:
+                  PRODUCT_BUNDLE_IDENTIFIER: com.mkremastered.playable
+                  PRODUCT_NAME: MKPlayable
+                  GENERATE_INFOPLIST_FILE: YES
+                  INFOPLIST_KEY_CFBundleDisplayName: "MK Remastered Trilogy"
+                  INFOPLIST_KEY_UILaunchScreen_Generation: YES
+                  INFOPLIST_KEY_UIRequiresFullScreen: YES
+                  INFOPLIST_KEY_UISupportedInterfaceOrientations: UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight
+                  CODE_SIGNING_ALLOWED: NO
+                  CODE_SIGNING_REQUIRED: NO
+                  CODE_SIGN_IDENTITY: ""
+
+          schemes:
+            MKPlayable:
+              build:
+                targets:
+                  MKPlayable: all
+          YAML
+
+      # ==========================================================
+      # APP ENTRY
+      # ==========================================================
+
+      - name: AppDelegate
+        run: |
+          cat > MKPlayable/AppDelegate.swift <<'SWIFT'
+          import UIKit
+
+          @main
+          class AppDelegate: UIResponder, UIApplicationDelegate {
+              var window: UIWindow?
+
+              func application(
+                  _ application: UIApplication,
+                  didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+              ) -> Bool {
+                  window = UIWindow(frame: UIScreen.main.bounds)
+                  let nav = UINavigationController(rootViewController: MainMenuViewController())
+                  nav.setNavigationBarHidden(true, animated: false)
+                  window?.rootViewController = nav
+                  window?.makeKeyAndVisible()
+                  return true
+              }
+          }
+          SWIFT
+
+      # ==========================================================
+      # MODELS
+      # ==========================================================
+
+      - name: Models
+        run: |
+          cat > MKPlayable/Models/GameData.swift <<'SWIFT'
+          import Foundation
+
+          enum MKGame: String {
+              case mk1 = "MORTAL KOMBAT"
+              case mk2 = "MORTAL KOMBAT II"
+              case mk3 = "MORTAL KOMBAT 3"
+          }
+
+          enum MKMode: String {
+              case classic = "CLASSIC"
+              case remastered = "REMASTERED"
+              case firstPerson = "FIRST PERSON"
+          }
+
+          struct Fighter {
+              let name: String
+          }
+
+          struct Arena {
+              let name: String
+          }
+
+          struct GameSelection {
+              var game: MKGame
+              var mode: MKMode
+              var fighter: Fighter
+              var arena: Arena
+          }
+
+          enum MKDatabase {
+              static let fighters = [
+                  Fighter(name: "SCORPION"),
+                  Fighter(name: "SUB-ZERO"),
+                  Fighter(name: "LIU KANG"),
+                  Fighter(name: "JOHNNY CAGE"),
+                  Fighter(name: "RAIDEN"),
+                  Fighter(name: "SONYA")
+              ]
+
+              static let arenas = [
+                  Arena(name: "THE PIT"),
+                  Arena(name: "COURTYARD"),
+                  Arena(name: "THRONE ROOM"),
+                  Arena(name: "ARMORY"),
+                  Arena(name: "DEAD POOL"),
+                  Arena(name: "LIVING FOREST")
+              ]
+          }
+          SWIFT
+
+      # ==========================================================
+      # UI HELPERS
+      # ==========================================================
+
+      - name: UIHelpers
+        run: |
+          cat > MKPlayable/UIHelpers.swift <<'SWIFT'
+          import UIKit
+
+          enum MKTheme {
+              static let bg = UIColor(red: 0.02, green: 0.02, blue: 0.04, alpha: 1)
+              static let red = UIColor(red: 0.45, green: 0.03, blue: 0.03, alpha: 1)
+              static let dark = UIColor(white: 0.11, alpha: 1)
+
+              static func menuButton(_ title: String, red: Bool = false) -> UIButton {
+                  let b = UIButton(type: .system)
+                  b.setTitle(title, for: .normal)
+                  b.setTitleColor(.white, for: .normal)
+                  b.titleLabel?.font = .systemFont(ofSize: 20, weight: .black)
+                  b.backgroundColor = red ? MKTheme.red : MKTheme.dark
+                  b.layer.cornerRadius = 12
+                  b.layer.borderWidth = 1
+                  b.layer.borderColor = UIColor.white.withAlphaComponent(0.15).cgColor
+                  return b
+              }
+
+              static func titleLabel(_ text: String, size: CGFloat = 38, color: UIColor = .white) -> UILabel {
+                  let l = UILabel()
+                  l.translatesAutoresizingMaskIntoConstraints = false
+                  l.text = text
+                  l.textAlignment = .center
+                  l.textColor = color
+                  l.font = .systemFont(ofSize: size, weight: .black)
+                  return l
+              }
+          }
+
+          extension UIViewController {
+              func push(_ vc: UIViewController) {
+                  navigationController?.pushViewController(vc, animated: true)
+              }
+
+              func mkBackButton(action: Selector) -> UIButton {
+                  let b = UIButton(type: .system)
+                  b.translatesAutoresizingMaskIntoConstraints = false
+                  b.setTitle("BACK", for: .normal)
+                  b.setTitleColor(.white, for: .normal)
+                  b.titleLabel?.font = .systemFont(ofSize: 18, weight: .bold)
+                  b.backgroundColor = MKTheme.dark
+                  b.layer.cornerRadius = 10
+                  b.addTarget(self, action: action, for: .touchUpInside)
+                  return b
+              }
+          }
+          SWIFT
+
+      # ==========================================================
+      # MAIN MENU
+      # ==========================================================
+
+      - name: MainMenuViewController
+        run: |
+          cat > MKPlayable/ViewControllers/MainMenuViewController.swift <<'SWIFT'
+          import UIKit
+
+          final class MainMenuViewController: UIViewController {
+
+              private let stack = UIStackView()
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = MKTheme.bg
+                  build()
+              }
+
+              private func build() {
+                  let title = MKTheme.titleLabel("MORTAL KOMBAT", size: 42)
+                  let sub = MKTheme.titleLabel("REMASTERED TRILOGY", size: 22, color: .systemRed)
+
+                  view.addSubview(title)
+                  view.addSubview(sub)
+
+                  NSLayoutConstraint.activate([
+                      title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 18),
+                      title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 0),
+                      sub.centerXAnchor.constraint(equalTo: view.centerXAnchor)
+                  ])
+
+                  stack.translatesAutoresizingMaskIntoConstraints = false
+                  stack.axis = .vertical
+                  stack.spacing = 12
+                  stack.distribution = .fillEqually
+                  view.addSubview(stack)
+
+                  let mk1 = MKTheme.menuButton("MORTAL KOMBAT", red: true)
+                  let mk2 = MKTheme.menuButton("MORTAL KOMBAT II", red: true)
+                  let mk3 = MKTheme.menuButton("MORTAL KOMBAT 3", red: true)
+
+                  let online = MKTheme.menuButton("ONLINE")
+                  let mods = MKTheme.menuButton("MODS")
+                  let settings = MKTheme.menuButton("SETTINGS")
+                  let credits = MKTheme.menuButton("CREDITS")
+
+                  mk1.addAction(UIAction { [weak self] _ in self?.openGame(.mk1) }, for: .touchUpInside)
+                  mk2.addAction(UIAction { [weak self] _ in self?.openGame(.mk2) }, for: .touchUpInside)
+                  mk3.addAction(UIAction { [weak self] _ in self?.openGame(.mk3) }, for: .touchUpInside)
+
+                  online.addAction(UIAction { [weak self] _ in self?.push(InfoViewController(titleText: "ONLINE", body: "QUICK MATCH\n\nPRIVATE MATCH\n\nFRIEND MATCH")) }, for: .touchUpInside)
+                  mods.addAction(UIAction { [weak self] _ in self?.push(InfoViewController(titleText: "MODS", body: "INSTALLED MODS\n\nIMPORT MOD\n\nENABLE / DISABLE")) }, for: .touchUpInside)
+                  settings.addAction(UIAction { [weak self] _ in self?.push(InfoViewController(titleText: "SETTINGS", body: "GRAPHICS\n\nSOUND\n\nCONTROLS\n\nCAMERA")) }, for: .touchUpInside)
+                  credits.addAction(UIAction { [weak self] _ in self?.push(InfoViewController(titleText: "CREDITS", body: "MK REMASTERED TRILOGY\n\nPLAYABLE BUILD")) }, for: .touchUpInside)
+
+                  [mk1, mk2, mk3, online, mods, settings, credits].forEach { stack.addArrangedSubview($0) }
+
+                  NSLayoutConstraint.activate([
+                      stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      stack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: 50),
+                      stack.widthAnchor.constraint(equalToConstant: 340),
+                      stack.heightAnchor.constraint(equalToConstant: 360)
+                  ])
+              }
+
+              private func openGame(_ game: MKGame) {
+                  push(ModeSelectViewController(game: game))
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+          }
+          SWIFT
+
+      # ==========================================================
+      # INFO SCREEN
+      # ==========================================================
+
+      - name: InfoViewController
+        run: |
+          cat > MKPlayable/ViewControllers/InfoViewController.swift <<'SWIFT'
+          import UIKit
+
+          final class InfoViewController: UIViewController {
+              private let titleText: String
+              private let body: String
+
+              init(titleText: String, body: String) {
+                  self.titleText = titleText
+                  self.body = body
+                  super.init(nibName: nil, bundle: nil)
+              }
+
+              required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = MKTheme.bg
+
+                  let title = MKTheme.titleLabel(titleText, size: 40)
+                  let label = UILabel()
+                  label.translatesAutoresizingMaskIntoConstraints = false
+                  label.textColor = .lightGray
+                  label.textAlignment = .center
+                  label.numberOfLines = 0
+                  label.font = .systemFont(ofSize: 20, weight: .bold)
+                  label.text = body
+
+                  let back = mkBackButton(action: #selector(goBack))
+
+                  view.addSubview(title)
+                  view.addSubview(label)
+                  view.addSubview(back)
+
+                  NSLayoutConstraint.activate([
+                      title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 25),
+                      title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      label.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      label.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+
+                      back.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+                      back.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      back.widthAnchor.constraint(equalToConstant: 220),
+                      back.heightAnchor.constraint(equalToConstant: 48)
+                  ])
+              }
+
+              @objc private func goBack() {
+                  navigationController?.popViewController(animated: true)
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+          }
+          SWIFT
+
+      # ==========================================================
+      # MODE SELECT
+      # ==========================================================
+
+      - name: ModeSelectViewController
+        run: |
+          cat > MKPlayable/ViewControllers/ModeSelectViewController.swift <<'SWIFT'
+          import UIKit
+
+          final class ModeSelectViewController: UIViewController {
+
+              private let game: MKGame
+
+              init(game: MKGame) {
+                  self.game = game
+                  super.init(nibName: nil, bundle: nil)
+              }
+
+              required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = MKTheme.bg
+                  build()
+              }
+
+              private func build() {
+                  let title = MKTheme.titleLabel(game.rawValue, size: 34)
+                  let sub = MKTheme.titleLabel("CHOOSE YOUR MODE", size: 22, color: .systemRed)
+
+                  let stack = UIStackView()
+                  stack.translatesAutoresizingMaskIntoConstraints = false
+                  stack.axis = .vertical
+                  stack.spacing = 14
+                  stack.distribution = .fillEqually
+
+                  let classic = MKTheme.menuButton("CLASSIC", red: true)
+                  let remastered = MKTheme.menuButton("REMASTERED", red: true)
+                  let firstPerson = MKTheme.menuButton("FIRST PERSON", red: true)
+                  let back = MKTheme.menuButton("BACK")
+
+                  classic.addAction(UIAction { [weak self] _ in self?.pick(.classic) }, for: .touchUpInside)
+                  remastered.addAction(UIAction { [weak self] _ in self?.pick(.remastered) }, for: .touchUpInside)
+                  firstPerson.addAction(UIAction { [weak self] _ in self?.pick(.firstPerson) }, for: .touchUpInside)
+                  back.addAction(UIAction { [weak self] _ in self?.navigationController?.popViewController(animated: true) }, for: .touchUpInside)
+
+                  [classic, remastered, firstPerson, back].forEach { stack.addArrangedSubview($0) }
+
+                  view.addSubview(title)
+                  view.addSubview(sub)
+                  view.addSubview(stack)
+
+                  NSLayoutConstraint.activate([
+                      title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 22),
+                      title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      sub.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 4),
+                      sub.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      stack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: 30),
+                      stack.widthAnchor.constraint(equalToConstant: 340),
+                      stack.heightAnchor.constraint(equalToConstant: 240)
+                  ])
+              }
+
+              private func pick(_ mode: MKMode) {
+                  push(FighterSelectViewController(game: game, mode: mode))
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+          }
+          SWIFT
+
+      # ==========================================================
+      # FIGHTER SELECT
+      # ==========================================================
+
+      - name: FighterSelectViewController
+        run: |
+          cat > MKPlayable/ViewControllers/FighterSelectViewController.swift <<'SWIFT'
+          import UIKit
+
+          final class FighterSelectViewController: UIViewController {
+
+              private let game: MKGame
+              private let mode: MKMode
+
+              init(game: MKGame, mode: MKMode) {
+                  self.game = game
+                  self.mode = mode
+                  super.init(nibName: nil, bundle: nil)
+              }
+
+              required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = MKTheme.bg
+                  build()
+              }
+
+              private func build() {
+                  let title = MKTheme.titleLabel("CHOOSE YOUR FIGHTER", size: 30, color: .white)
+
+                  let grid = UIStackView()
+                  grid.translatesAutoresizingMaskIntoConstraints = false
+                  grid.axis = .vertical
+                  grid.spacing = 10
+                  grid.distribution = .fillEqually
+
+                  for row in stride(from: 0, to: MKDatabase.fighters.count, by: 2) {
+                      let h = UIStackView()
+                      h.axis = .horizontal
+                      h.spacing = 10
+                      h.distribution = .fillEqually
+
+                      let f1 = MKDatabase.fighters[row]
+                      let b1 = MKTheme.menuButton(f1.name, red: true)
+                      b1.addAction(UIAction { [weak self] _ in self?.pick(f1) }, for: .touchUpInside)
+                      h.addArrangedSubview(b1)
+
+                      if row + 1 < MKDatabase.fighters.count {
+                          let f2 = MKDatabase.fighters[row + 1]
+                          let b2 = MKTheme.menuButton(f2.name, red: true)
+                          b2.addAction(UIAction { [weak self] _ in self?.pick(f2) }, for: .touchUpInside)
+                          h.addArrangedSubview(b2)
+                      }
+
+                      grid.addArrangedSubview(h)
+                  }
+
+                  let back = MKTheme.menuButton("BACK")
+                  back.translatesAutoresizingMaskIntoConstraints = false
+                  back.addAction(UIAction { [weak self] _ in self?.navigationController?.popViewController(animated: true) }, for: .touchUpInside)
+
+                  view.addSubview(title)
+                  view.addSubview(grid)
+                  view.addSubview(back)
+
+                  NSLayoutConstraint.activate([
+                      title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 22),
+                      title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      grid.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      grid.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+                      grid.widthAnchor.constraint(equalToConstant: 340),
+                      grid.heightAnchor.constraint(equalToConstant: 210),
+
+                      back.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -20),
+                      back.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      back.widthAnchor.constraint(equalToConstant: 220),
+                      back.heightAnchor.constraint(equalToConstant: 48)
+                  ])
+              }
+
+              private func pick(_ fighter: Fighter) {
+                  push(ArenaSelectViewController(game: game, mode: mode, fighter: fighter))
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+          }
+          SWIFT
+
+      # ==========================================================
+      # ARENA SELECT
+      # ==========================================================
+
+      - name: ArenaSelectViewController
+        run: |
+          cat > MKPlayable/ViewControllers/ArenaSelectViewController.swift <<'SWIFT'
+          import UIKit
+
+          final class ArenaSelectViewController: UIViewController {
+
+              private let game: MKGame
+              private let mode: MKMode
+              private let fighter: Fighter
+
+              init(game: MKGame, mode: MKMode, fighter: Fighter) {
+                  self.game = game
+                  self.mode = mode
+                  self.fighter = fighter
+                  super.init(nibName: nil, bundle: nil)
+              }
+
+              required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = MKTheme.bg
+                  build()
+              }
+
+              private func build() {
+                  let title = MKTheme.titleLabel("CHOOSE YOUR ARENA", size: 30, color: .white)
+
+                  let stack = UIStackView()
+                  stack.translatesAutoresizingMaskIntoConstraints = false
+                  stack.axis = .vertical
+                  stack.spacing = 10
+                  stack.distribution = .fillEqually
+
+                  for a in MKDatabase.arenas {
+                      let b = MKTheme.menuButton(a.name, red: true)
+                      b.addAction(UIAction { [weak self] _ in self?.pick(a) }, for: .touchUpInside)
+                      stack.addArrangedSubview(b)
+                  }
+
+                  view.addSubview(title)
+                  view.addSubview(stack)
+
+                  NSLayoutConstraint.activate([
+                      title.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 18),
+                      title.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+                      stack.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: 10),
+                      stack.widthAnchor.constraint(equalToConstant: 340),
+                      stack.heightAnchor.constraint(equalToConstant: 300)
+                  ])
+              }
+
+              private func pick(_ arena: Arena) {
+                  let selection = GameSelection(game: game, mode: mode, fighter: fighter, arena: arena)
+                  push(FightViewController(selection: selection))
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+          }
+          SWIFT
+
+      # ==========================================================
+      # FIGHT
+      # ==========================================================
+
+      - name: FightViewController
+        run: |
+          cat > MKPlayable/ViewControllers/FightViewController.swift <<'SWIFT'
+          import UIKit
+
+          final class FightViewController: UIViewController {
+
+              private let selection: GameSelection
+
+              private let playerName = UILabel()
+              private let enemyName = UILabel()
+              private let modeLabel = UILabel()
+              private let timerLabel = UILabel()
+
+              private let playerHPBar = UIView()
+              private let enemyHPBar = UIView()
+              private var playerHPWidth: NSLayoutConstraint!
+              private var enemyHPWidth: NSLayoutConstraint!
+
+              private let player = UIView()
+              private let enemy = UIView()
+              private let arenaLabel = UILabel()
+              private let infoLabel = UILabel()
+
+              private var playerHP = 100
+              private var enemyHP = 100
+              private var timeLeft = 60
+              private var gameTimer: Timer?
+              private var aiTimer: Timer?
+              private var isBlocking = false
+              private var currentPlayerCenterX: CGFloat = 215
+
+              init(selection: GameSelection) {
+                  self.selection = selection
+                  super.init(nibName: nil, bundle: nil)
+              }
+
+              required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+              override func viewDidLoad() {
+                  super.viewDidLoad()
+                  view.backgroundColor = backgroundColorForArena()
+                  buildHUD()
+                  buildFighters()
+                  buildControls()
+                  applyModeVisuals()
+                  startTimers()
+              }
+
+              deinit {
+                  gameTimer?.invalidate()
+                  aiTimer?.invalidate()
+              }
+
+              private func buildHUD() {
+                  playerName.translatesAutoresizingMaskIntoConstraints = false
+                  enemyName.translatesAutoresizingMaskIntoConstraints = false
+                  timerLabel.translatesAutoresizingMaskIntoConstraints = false
+                  modeLabel.translatesAutoresizingMaskIntoConstraints = false
+                  arenaLabel.translatesAutoresizingMaskIntoConstraints = false
+                  infoLabel.translatesAutoresizingMaskIntoConstraints = false
+
+                  playerName.text = selection.fighter.name
+                  enemyName.text = enemyNameForGame()
+                  timerLabel.text = "60"
+                  modeLabel.text = selection.mode.rawValue
+                  arenaLabel.text = selection.arena.name
+                  infoLabel.text = "FIGHT!"
+
+                  [playerName, enemyName, timerLabel, modeLabel, arenaLabel, infoLabel].forEach {
+                      $0.textColor = .white
+                      $0.textAlignment = .center
+                      $0.font = .systemFont(ofSize: 16, weight: .black)
+                  }
+
+                  timerLabel.font = .systemFont(ofSize: 24, weight: .black)
+                  modeLabel.textColor = .systemYellow
+                  arenaLabel.textColor = .lightGray
+                  infoLabel.textColor = .systemRed
+
+                  let playerFrame = UIView()
+                  let enemyFrame = UIView()
+                  playerFrame.translatesAutoresizingMaskIntoConstraints = false
+                  enemyFrame.translatesAutoresizingMaskIntoConstraints = false
+                  playerFrame.backgroundColor = UIColor.white.withAlphaComponent(0.15)
+                  enemyFrame.backgroundColor = UIColor.white.withAlphaComponent(0.15)
+                  playerFrame.layer.cornerRadius = 6
+                  enemyFrame.layer.cornerRadius = 6
+
+                  playerHPBar.translatesAutoresizingMaskIntoConstraints = false
+                  enemyHPBar.translatesAutoresizingMaskIntoConstraints = false
+                  playerHPBar.backgroundColor = .systemGreen
+                  enemyHPBar.backgroundColor = .systemGreen
+                  playerHPBar.layer.cornerRadius = 6
+                  enemyHPBar.layer.cornerRadius = 6
+
+                  view.addSubview(playerFrame)
+                  view.addSubview(enemyFrame)
+                  view.addSubview(playerHPBar)
+                  view.addSubview(enemyHPBar)
+                  view.addSubview(playerName)
+                  view.addSubview(enemyName)
+                  view.addSubview(timerLabel)
+                  view.addSubview(modeLabel)
+                  view.addSubview(arenaLabel)
+                  view.addSubview(infoLabel)
+
+                  playerHPWidth = playerHPBar.widthAnchor.constraint(equalToConstant: 150)
+                  enemyHPWidth = enemyHPBar.widthAnchor.constraint(equalToConstant: 150)
+
+                  NSLayoutConstraint.activate([
+                      playerName.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+                      playerName.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+
+                      enemyName.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 4),
+                      enemyName.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+
+                      timerLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 2),
+                      timerLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      modeLabel.topAnchor.constraint(equalTo: timerLabel.bottomAnchor, constant: 2),
+                      modeLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      arenaLabel.topAnchor.constraint(equalTo: modeLabel.bottomAnchor, constant: 2),
+                      arenaLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      infoLabel.topAnchor.constraint(equalTo: arenaLabel.bottomAnchor, constant: 4),
+                      infoLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+
+                      playerFrame.topAnchor.constraint(equalTo: playerName.bottomAnchor, constant: 4),
+                      playerFrame.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 24),
+                      playerFrame.widthAnchor.constraint(equalToConstant: 150),
+                      playerFrame.heightAnchor.constraint(equalToConstant: 16),
+
+                      playerHPBar.topAnchor.constraint(equalTo: playerFrame.topAnchor),
+                      playerHPBar.leadingAnchor.constraint(equalTo: playerFrame.leadingAnchor),
+                      playerHPBar.heightAnchor.constraint(equalToConstant: 16),
+                      playerHPWidth,
+
+                      enemyFrame.topAnchor.constraint(equalTo: enemyName.bottomAnchor, constant: 4),
+                      enemyFrame.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -24),
+                      enemyFrame.widthAnchor.constraint(equalToConstant: 150),
+                      enemyFrame.heightAnchor.constraint(equalToConstant: 16),
+
+                      enemyHPBar.topAnchor.constraint(equalTo: enemyFrame.topAnchor),
+                      enemyHPBar.trailingAnchor.constraint(equalTo: enemyFrame.trailingAnchor),
+                      enemyHPBar.heightAnchor.constraint(equalToConstant: 16),
+                      enemyHPWidth
+                  ])
+              }
+
+              private func buildFighters() {
+                  player.translatesAutoresizingMaskIntoConstraints = false
+                  enemy.translatesAutoresizingMaskIntoConstraints = false
+
+                  player.backgroundColor = colorForFighter(selection.fighter.name)
+                  enemy.backgroundColor = .systemOrange
+                  player.layer.cornerRadius = 14
+                  enemy.layer.cornerRadius = 14
+
+                  view.addSubview(player)
+                  view.addSubview(enemy)
+
+                  let playerWidth: CGFloat = selection.mode == .firstPerson ? 0 : 56
+                  let playerHeight: CGFloat = selection.mode == .firstPerson ? 0 : 138
+                  let enemyWidth: CGFloat = selection.mode == .firstPerson ? 96 : 56
+                  let enemyHeight: CGFloat = selection.mode == .firstPerson ? 200 : 138
+
+                  NSLayoutConstraint.activate([
+                      player.widthAnchor.constraint(equalToConstant: playerWidth),
+                      player.heightAnchor.constraint(equalToConstant: playerHeight),
+                      player.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 185),
+                      player.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -5),
+
+                      enemy.widthAnchor.constraint(equalToConstant: enemyWidth),
+                      enemy.heightAnchor.constraint(equalToConstant: enemyHeight),
+                      enemy.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: selection.mode == .firstPerson ? -150 : -185),
+                      enemy.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: -5)
+                  ])
+              }
+
+              private func buildControls() {
+                  let left = control("◀")
+                  let right = control("▶")
+                  let punch = control("P")
+                  let kick = control("K")
+                  let block = control("B")
+                  let special = control("S")
+                  let pause = control("Ⅱ")
+                  let moves = control("?")
+
+                  left.frame = CGRect(x: 25, y: view.bounds.height - 110, width: 65, height: 65)
+                  right.frame = CGRect(x: 100, y: view.bounds.height - 110, width: 65, height: 65)
+
+                  punch.frame = CGRect(x: view.bounds.width - 175, y: view.bounds.height - 145, width: 60, height: 60)
+                  kick.frame = CGRect(x: view.bounds.width - 100, y: view.bounds.height - 145, width: 60, height: 60)
+                  block.frame = CGRect(x: view.bounds.width - 175, y: view.bounds.height - 75, width: 60, height: 60)
+                  special.frame = CGRect(x: view.bounds.width - 100, y: view.bounds.height - 75, width: 60, height: 60)
+
+                  pause.frame = CGRect(x: 16, y: 20, width: 52, height: 38)
+                  moves.frame = CGRect(x: view.bounds.width - 70, y: 20, width: 52, height: 38)
+
+                  [left, right, punch, kick, block, special, pause, moves].forEach {
+                      $0.autoresizingMask = [.flexibleTopMargin, .flexibleLeftMargin, .flexibleRightMargin]
+                      view.addSubview($0)
+                  }
+
+                  left.addAction(UIAction { [weak self] _ in self?.movePlayer(-18) }, for: .touchUpInside)
+                  right.addAction(UIAction { [weak self] _ in self?.movePlayer(18) }, for: .touchUpInside)
+                  punch.addAction(UIAction { [weak self] _ in self?.attack(kind: "PUNCH", damage: 8) }, for: .touchUpInside)
+                  kick.addAction(UIAction { [weak self] _ in self?.attack(kind: "KICK", damage: 12) }, for: .touchUpInside)
+                  special.addAction(UIAction { [weak self] _ in self?.attack(kind: "SPECIAL", damage: 18) }, for: .touchUpInside)
+                  block.addAction(UIAction { [weak self] _ in self?.blockNow() }, for: .touchUpInside)
+                  pause.addAction(UIAction { [weak self] _ in self?.pauseMenu() }, for: .touchUpInside)
+                  moves.addAction(UIAction { [weak self] _ in self?.moveList() }, for: .touchUpInside)
+              }
+
+              private func control(_ text: String) -> UIButton {
+                  let b = UIButton(type: .system)
+                  b.setTitle(text, for: .normal)
+                  b.setTitleColor(.white, for: .normal)
+                  b.titleLabel?.font = .systemFont(ofSize: 18, weight: .black)
+                  b.backgroundColor = UIColor.black.withAlphaComponent(0.5)
+                  b.layer.cornerRadius = 16
+                  b.layer.borderWidth = 1.3
+                  b.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
+                  return b
+              }
+
+              private func startTimers() {
+                  gameTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+                      self?.tick()
+                  }
+
+                  aiTimer = Timer.scheduledTimer(withTimeInterval: 1.6, repeats: true) { [weak self] _ in
+                      self?.enemyAction()
+                  }
+              }
+
+              private func tick() {
+                  guard playerHP > 0, enemyHP > 0 else { return }
+                  timeLeft -= 1
+                  timerLabel.text = "\(timeLeft)"
+                  if timeLeft <= 0 {
+                      finishFight(result: playerHP >= enemyHP ? "TIME OVER - YOU WIN" : "TIME OVER - YOU LOSE")
+                  }
+              }
+
+              private func movePlayer(_ dx: CGFloat) {
+                  guard selection.mode != .firstPerson else {
+                      infoLabel.text = "FIRST PERSON MODE"
+                      return
+                  }
+
+                  currentPlayerCenterX += dx
+                  currentPlayerCenterX = max(170, min(290, currentPlayerCenterX))
+
+                  if let constraint = player.constraints.first(where: { $0.firstAttribute == .width }) {
+                      _ = constraint
+                  }
+
+                  UIView.animate(withDuration: 0.08) {
+                      self.player.transform = self.player.transform.translatedBy(x: dx, y: 0)
+                  }
+                  infoLabel.text = "MOVE"
+              }
+
+              private func attack(kind: String, damage: Int) {
+                  guard playerHP > 0, enemyHP > 0 else { return }
+
+                  infoLabel.text = kind
+
+                  let actualDamage = selection.mode == .classic ? damage : damage + 2
+                  enemyHP -= actualDamage
+                  enemyHP = max(0, enemyHP)
+                  updateBars()
+
+                  UIView.animate(withDuration: 0.08, animations: {
+                      self.enemy.transform = CGAffineTransform(translationX: 10, y: 0)
+                  }, completion: { _ in
+                      UIView.animate(withDuration: 0.08) {
+                          self.enemy.transform = .identity
+                      }
+                  })
+
+                  if enemyHP <= 0 {
+                      finishFight(result: "FINISH HIM! YOU WIN")
+                  }
+              }
+
+              private func enemyAction() {
+                  guard playerHP > 0, enemyHP > 0 else { return }
+
+                  let roll = Int.random(in: 0...3)
+
+                  if roll == 0 {
+                      infoLabel.text = "ENEMY PUNCH"
+                      var damage = 7
+                      if isBlocking { damage = 2 }
+                      playerHP -= damage
+                  } else if roll == 1 {
+                      infoLabel.text = "ENEMY KICK"
+                      var damage = 10
+                      if isBlocking { damage = 3 }
+                      playerHP -= damage
+                  } else if roll == 2 {
+                      infoLabel.text = "ENEMY SPECIAL"
+                      var damage = 14
+                      if isBlocking { damage = 5 }
+                      playerHP -= damage
+                  } else {
+                      infoLabel.text = "ENEMY WAIT"
+                  }
+
+                  playerHP = max(0, playerHP)
+                  isBlocking = false
+                  updateBars()
+
+                  UIView.animate(withDuration: 0.08, animations: {
+                      self.player.transform = self.player.transform.translatedBy(x: -6, y: 0)
+                  }, completion: { _ in
+                      UIView.animate(withDuration: 0.08) {
+                          self.player.transform = .identity
+                      }
+                  })
+
+                  if playerHP <= 0 {
+                      finishFight(result: "YOU LOSE")
+                  }
+              }
+
+              private func blockNow() {
+                  isBlocking = true
+                  infoLabel.text = "BLOCK"
+              }
+
+              private func updateBars() {
+                  playerHPWidth.constant = CGFloat(playerHP) * 1.5
+                  enemyHPWidth.constant = CGFloat(enemyHP) * 1.5
+                  playerHPBar.backgroundColor = playerHP > 30 ? .systemGreen : .systemRed
+                  enemyHPBar.backgroundColor = enemyHP > 30 ? .systemGreen : .systemRed
+              }
+
+              private func finishFight(result: String) {
+                  gameTimer?.invalidate()
+                  aiTimer?.invalidate()
+
+                  let alert = UIAlertController(
+                      title: result,
+                      message: "\(selection.game.rawValue)\n\(selection.mode.rawValue)\n\(selection.fighter.name) • \(selection.arena.name)",
+                      preferredStyle: .alert
+                  )
+
+                  alert.addAction(UIAlertAction(title: "RESTART", style: .default, handler: { [weak self] _ in
+                      guard let self else { return }
+                      self.navigationController?.setViewControllers([
+                          self.navigationController!.viewControllers.first!,
+                          ModeSelectViewController(game: self.selection.game)
+                      ], animated: true)
+                  }))
+
+                  alert.addAction(UIAlertAction(title: "MENU", style: .destructive, handler: { [weak self] _ in
+                      self?.navigationController?.popToRootViewController(animated: true)
+                  }))
+
+                  present(alert, animated: true)
+              }
+
+              private func moveList() {
+                  let text: String
+                  switch selection.fighter.name {
+                  case "SCORPION":
+                      text = "P - Punch\nK - Kick\nB - Block\nS - Spear / Fire"
+                  case "SUB-ZERO":
+                      text = "P - Punch\nK - Kick\nB - Block\nS - Ice Ball"
+                  case "LIU KANG":
+                      text = "P - Punch\nK - Kick\nB - Block\nS - Flying Kick"
+                  case "JOHNNY CAGE":
+                      text = "P - Punch\nK - Kick\nB - Block\nS - Shadow Kick"
+                  case "RAIDEN":
+                      text = "P - Punch\nK - Kick\nB - Block\nS - Lightning"
+                  default:
+                      text = "P - Punch\nK - Kick\nB - Block\nS - Ring Toss"
+                  }
+
+                  let alert = UIAlertController(title: "MOVE LIST", message: text, preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "BACK", style: .default))
+                  present(alert, animated: true)
+              }
+
+              private func pauseMenu() {
+                  let alert = UIAlertController(title: "PAUSED", message: nil, preferredStyle: .alert)
+                  alert.addAction(UIAlertAction(title: "RESUME", style: .default))
+                  alert.addAction(UIAlertAction(title: "MOVE LIST", style: .default, handler: { [weak self] _ in
+                      self?.moveList()
+                  }))
+                  alert.addAction(UIAlertAction(title: "MAIN MENU", style: .destructive, handler: { [weak self] _ in
+                      self?.navigationController?.popToRootViewController(animated: true)
+                  }))
+                  present(alert, animated: true)
+              }
+
+              private func applyModeVisuals() {
+                  switch selection.mode {
+                  case .classic:
+                      modeLabel.textColor = .white
+                      infoLabel.text = "CLASSIC MODE"
+                  case .remastered:
+                      modeLabel.textColor = .systemRed
+                      infoLabel.text = "REMASTERED MODE"
+                  case .firstPerson:
+                      player.isHidden = true
+                      enemy.layer.cornerRadius = 20
+                      modeLabel.textColor = .systemYellow
+                      infoLabel.text = "FIRST PERSON MODE"
+                  }
+              }
+
+              private func enemyNameForGame() -> String {
+                  switch selection.game {
+                  case .mk1: return "SHANG TSUNG"
+                  case .mk2: return "KINTARO"
+                  case .mk3: return "SHAO KAHN"
+                  }
+              }
+
+              private func colorForFighter(_ name: String) -> UIColor {
+                  switch name {
+                  case "SCORPION": return .systemYellow
+                  case "SUB-ZERO": return .systemBlue
+                  case "LIU KANG": return .systemRed
+                  case "JOHNNY CAGE": return .systemGreen
+                  case "RAIDEN": return .systemCyan
+                  default: return .systemPink
+                  }
+              }
+
+              private func backgroundColorForArena() -> UIColor {
+                  switch selection.arena.name {
+                  case "THE PIT": return UIColor(red: 0.08, green: 0.05, blue: 0.05, alpha: 1)
+                  case "COURTYARD": return UIColor(red: 0.09, green: 0.08, blue: 0.05, alpha: 1)
+                  case "THRONE ROOM": return UIColor(red: 0.07, green: 0.04, blue: 0.04, alpha: 1)
+                  case "ARMORY": return UIColor(red: 0.05, green: 0.05, blue: 0.07, alpha: 1)
+                  case "DEAD POOL": return UIColor(red: 0.03, green: 0.08, blue: 0.06, alpha: 1)
+                  default: return UIColor(red: 0.05, green: 0.09, blue: 0.04, alpha: 1)
+                  }
+              }
+
+              override var prefersStatusBarHidden: Bool { true }
+          }
+          SWIFT
+
+      # ==========================================================
+      # GENERATE PROJECT
+      # ==========================================================
+
+      - name: Generate Xcode project
+        run: |
+          xcodegen generate
+
+      # ==========================================================
+      # BUILD
+      # ==========================================================
+
+      - name: Build app
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project MKPlayable.xcodeproj \
+            -scheme MKPlayable \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      # ==========================================================
+      # PACKAGE IPA
+      # ==========================================================
+
+      - name: Create IPA
+        run: |
+          APP="build/Build/Products/Release-iphoneos/MKPlayable.app"
+
+          if [ ! -d "$APP" ]; then
+            echo "APP not found"
+            find build -name "*.app" -print
+            exit 1
+          fi
+
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+          zip -r MK-Remastered-Trilogy-Playable.ipa Payload
+          ls -lh MK-Remastered-Trilogy-Playable.ipa
+
+      # ==========================================================
+      # ARTIFACT
+      # ==========================================================
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK-Remastered-Trilogy-Playable-iOS
+          path: MK-Remastered-Trilogy-Playable.ipa
+          compression-level: 0
