@@ -1,4 +1,4 @@
-name: Build MK1 v0.9 Real Classic + Remastered
+name: Build MK1 v0.9.1 Stable Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -150,69 +150,6 @@ jobs:
           git clone --depth 1 https://github.com/litchie/dospad.git dospad
           xcodebuild -project dospad/dospad.xcodeproj -list
 
-      - name: Patch real DOSBox render FPS counter
-        run: |
-          set -e
-
-          RENDER_CPP=$(find dospad -type f -path "*/src/gui/render.cpp" | head -1)
-
-          if [ -z "$RENDER_CPP" ]; then
-            echo "ERROR: DOSBOX render.cpp NOT FOUND"
-            exit 1
-          fi
-
-          echo "RENDER_CPP=$RENDER_CPP"
-
-          python3 - "$RENDER_CPP" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
-
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8", errors="ignore")
-
-          if "MK_REAL_RENDER_FPS" in text:
-              raise SystemExit(0)
-
-          pattern = re.compile(
-              r"void\s+RENDER_EndUpdate\s*\(\s*bool\s+abort\s*\)\s*\{"
-          )
-
-          match = pattern.search(text)
-          if not match:
-              raise SystemExit("ERROR: RENDER_EndUpdate(bool abort) NOT FOUND")
-
-          bridge = r'''
-
-          // ======================================================
-          // MK_REAL_RENDER_FPS
-          // Counts completed DOSBox render frames, not iOS UI Hz.
-          // ======================================================
-          static volatile unsigned long mk_real_render_frame_counter = 0;
-
-          extern "C" unsigned long MKRenderFrameCounter(void)
-          {
-              return mk_real_render_frame_counter;
-          }
-
-          '''
-
-          text = text[:match.start()] + bridge + text[match.start():]
-
-          match = pattern.search(text, match.start() + len(bridge))
-          if not match:
-              raise SystemExit("ERROR: RENDER_EndUpdate LOST AFTER BRIDGE INSERT")
-
-          insert_at = match.end()
-          text = (
-              text[:insert_at]
-              + "\n\tif (!abort) ++mk_real_render_frame_counter;\n"
-              + text[insert_at:]
-          )
-
-          path.write_text(text, encoding="utf-8")
-          print("REAL DOSBOX FRAME COUNTER PATCHED")
-          PY
 
       - name: Create Classic and Remastered configs
         run: |
@@ -247,7 +184,7 @@ jobs:
               "game/MK1/REMASTER.CFG": {
                   ("render", "frameskip"): "0",
                   ("render", "aspect"): "true",
-                  ("render", "scaler"): "hq2x forced",
+                  ("render", "scaler"): "hq2x",
                   ("cpu", "core"): "simple",
                   ("cpu", "cycles"): "max 95%",
               },
@@ -425,7 +362,7 @@ jobs:
               [self.view addSubview:self.remasteredButton];
 
               self.statusLabel = [[UILabel alloc] init];
-              self.statusLabel.text = @"ORIGINAL MK1 ENGINE • FULL GAME • FPS";
+              self.statusLabel.text = @"ORIGINAL MK1 ENGINE • FULL GAME • STABLE";
               self.statusLabel.textAlignment = NSTextAlignmentCenter;
               self.statusLabel.textColor = [UIColor colorWithWhite:0.48 alpha:1];
               self.statusLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
@@ -601,7 +538,7 @@ jobs:
               delegate.write_text(text, encoding="utf-8")
 
           # ------------------------------------------------------
-          # 3) CLEAN GAME VIEW + TOUCH + FPS
+          # 3) STABLE NATIVE FULLSCREEN + TOUCH
           # ------------------------------------------------------
 
           vc = Path("dospad/dospad/Main/DPEmulatorViewController.m")
@@ -617,76 +554,114 @@ jobs:
                   1
               )
 
-          if 'extern unsigned long MKRenderFrameCounter(void);' not in text:
-              quartz = '#import <QuartzCore/QuartzCore.h>'
-              if quartz not in text:
-                  raise SystemExit("ERROR: QUARTZCORE IMPORT NOT FOUND")
-              text = text.replace(
-                  quartz,
-                  quartz + '\n\nextern unsigned long MKRenderFrameCounter(void);',
-                  1
+          # Do not override scaleScreenViewToSize geometry.
+          # Use iDOS native 16:10 scaling through putScreen().
+          if "MKSTABLE_NATIVE_FULLSCREEN" not in text:
+              update_pattern = re.compile(
+                  r'-\(void\)updateScreen\s*\{.*?\n\}\n- \(void\)toggleScreenSize',
+                  re.S
               )
 
-          if "_mkFPSLink" not in text:
-              ivar_marker = "    PianoKeyboard *piano;\n}"
-              if ivar_marker not in text:
-                  raise SystemExit("ERROR: FPS IVAR MARKER NOT FOUND")
+              update_match = update_pattern.search(text)
+              if not update_match:
+                  raise SystemExit("ERROR: updateScreen METHOD NOT FOUND")
 
-              ivars = (
-                  "    PianoKeyboard *piano;\n"
-                  "    CADisplayLink *_mkFPSLink;\n"
-                  "    UILabel *_mkFPSLabel;\n"
-                  "    CFTimeInterval _mkFPSLastTime;\n"
-                  "    unsigned long _mkFPSLastCounter;\n"
-                  "}"
+              stable_update = r'''-(void)updateScreen
+          {
+          CGRect viewRect = _rootContainer.bounds;
+
+          // MKSTABLE_NATIVE_FULLSCREEN
+          // MK1 DOS is 320x200 = 16:10.
+          NSString *mkMode =
+          [NSUserDefaults.standardUserDefaults stringForKey:@"MKRenderMode"];
+
+          if (mkMode.length > 0 && !_currentScene.isPortrait)
+          {
+          [self putScreen:viewRect
+              scaleMode:DPScreenScaleModeAspectFit16x10];
+          return;
+          }
+
+          if (_currentScene.isPortrait)
+          {
+          [self fillScreen:_screenRect];
+          }
+          else
+          {
+          if (shouldShrinkScreen)
+          {
+            if (ISIPAD()) {
+                viewRect.size.height -= 250;
+                [self putScreen:viewRect scaleMode:[DPSettings shared].screenScaleMode];
+            } else {
+                [self putScreen:viewRect scaleMode:DPScreenScaleModeAspectFit4x3];
+            }
+          }
+          else
+          {
+            [self putScreen:viewRect scaleMode:[DPSettings shared].screenScaleMode];
+          }
+          }
+          }
+          - (void)toggleScreenSize'''
+
+              text = (
+                  text[:update_match.start()]
+                  + stable_update
+                  + text[update_match.end():]
               )
 
-              text = text.replace(ivar_marker, ivars, 1)
-
-          # iDOS rescales the DOS screen through this method after video-mode
-          # changes. Override its requested size for MK1 so it cannot fall
-          # back to the tiny lower-left view.
-          if "MKFINAL_SCALE_OVERRIDE" not in text:
-              scale_pattern = re.compile(
-                  r'(-\s*\(void\)\s*scaleScreenViewToSize:\s*\(CGSize\)size\s*'
-                  r'center:\s*\(CGPoint\)center\s*\{)'
+          # Keep native size/center. Change only the final filter.
+          if "MKSTABLE_FILTER" not in text:
+              filter_pattern = re.compile(
+                  r'(- \(void\)scaleScreenViewToSize:\(CGSize\)size center:\(CGPoint\)center\s*\{.*?self\.screenView\.center\s*=\s*CGPointMake\(center\.x,\s*center\.y\);)(.*?)(\n\})',
+                  re.S
               )
 
-              scale_match = scale_pattern.search(text)
-              if not scale_match:
-                  raise SystemExit("ERROR: scaleScreenViewToSize:center: NOT FOUND")
+              filter_match = filter_pattern.search(text)
+              if not filter_match:
+                  raise SystemExit("ERROR: scaleScreenViewToSize METHOD NOT FOUND")
 
-              scale_code = r'''
+              filter_code = r'''
 
-              // MKFINAL_SCALE_OVERRIDE
-              NSString *mkScaleMode =
-                  [NSUserDefaults.standardUserDefaults
-                   stringForKey:@"MKRenderMode"];
+          // MKSTABLE_FILTER
+          NSString *mkFilterMode =
+          [NSUserDefaults.standardUserDefaults stringForKey:@"MKRenderMode"];
 
-              if (mkScaleMode.length > 0 && _rootContainer)
-              {
-                  CGFloat mkW = CGRectGetWidth(_rootContainer.bounds);
-                  CGFloat mkH = CGRectGetHeight(_rootContainer.bounds);
-                  CGFloat mkAspect = 1.60;
-                  CGFloat mkGameH = mkH;
-                  CGFloat mkGameW = mkGameH * mkAspect;
+          if (mkFilterMode.length > 0)
+          {
+          BOOL remastered =
+            [mkFilterMode isEqualToString:@"REMASTERED"];
 
-                  if (mkGameW > mkW)
-                  {
-                      mkGameW = mkW;
-                      mkGameH = mkGameW / mkAspect;
-                  }
+          self.screenView.layer.magnificationFilter =
+            remastered ? kCAFilterLinear : kCAFilterNearest;
 
-                  size = CGSizeMake(mkGameW, mkGameH);
-                  center = CGPointMake(mkW / 2.0, mkH / 2.0);
-              }
-              // END MKFINAL_SCALE_OVERRIDE
-              '''
+          self.screenView.layer.minificationFilter =
+            remastered ? kCAFilterLinear : kCAFilterNearest;
 
-              insert_at = scale_match.end()
-              text = text[:insert_at] + scale_code + text[insert_at:]
+          self.screenView.layer.shouldRasterize = !remastered;
+          }
+          else
+          {
+          if ([DPSettings shared].pixelatedScaling) {
+            self.screenView.layer.magnificationFilter = kCAFilterNearest;
+            self.screenView.layer.shouldRasterize = YES;
+          } else {
+            self.screenView.layer.magnificationFilter = kCAFilterLinear;
+            self.screenView.layer.shouldRasterize = NO;
+          }
+          }
+          '''
 
-          if "MKFINAL_GAME_UI" not in text:
+              text = (
+                  text[:filter_match.start()]
+                  + filter_match.group(1)
+                  + filter_code
+                  + filter_match.group(3)
+                  + text[filter_match.end():]
+              )
+
+          if "MKSTABLE_GAME_UI" not in text:
               marker = '// MARK: DPGamepadDelegate'
               if marker not in text:
                   raise SystemExit("ERROR: GAMEPAD MARKER NOT FOUND")
@@ -694,113 +669,57 @@ jobs:
               methods = r'''
 
           // ======================================================
-          // MKFINAL_GAME_UI
+          // MKSTABLE_GAME_UI
           // ======================================================
 
-          - (BOOL)mkFinalIsOverlay:(UIView *)view
+          - (BOOL)mkStableIsOverlay:(UIView *)view
           {
-              if ([view.accessibilityIdentifier isEqualToString:@"MK_FINAL_CONTROL"])
+              if ([view.accessibilityIdentifier isEqualToString:@"MK_STABLE_CONTROL"])
                   return YES;
-              if (view == _mkFPSLabel)
-                  return YES;
-              if (view.tag == 9902)
+              if (view.tag == 9912)
                   return YES;
               return NO;
           }
 
-          - (void)mkFinalApplyLayout
+          - (void)mkStableHideIDOSChrome
           {
               if (!_rootContainer || !self.screenView)
                   return;
 
-              _rootContainer.frame = self.view.bounds;
-              _rootContainer.autoresizingMask =
-                  UIViewAutoresizingFlexibleWidth |
-                  UIViewAutoresizingFlexibleHeight;
+              self.view.backgroundColor = UIColor.blackColor;
               _rootContainer.backgroundColor = UIColor.blackColor;
 
               for (UIView *view in _rootContainer.subviews)
               {
-                  if (view == self.screenView || [self mkFinalIsOverlay:view])
+                  if (view == self.screenView || [self mkStableIsOverlay:view])
                   {
                       view.hidden = NO;
+                      continue;
                   }
-                  else
-                  {
-                      view.hidden = YES;
-                      view.userInteractionEnabled = NO;
-                  }
+
+                  view.hidden = YES;
+                  view.userInteractionEnabled = NO;
               }
 
-              CGFloat w = CGRectGetWidth(_rootContainer.bounds);
-              CGFloat h = CGRectGetHeight(_rootContainer.bounds);
-
-              // Preserve the original DOS 320x200-ish shape.
-              CGFloat aspect = 1.60;
-              CGFloat gh = h;
-              CGFloat gw = gh * aspect;
-
-              if (gw > w)
-              {
-                  gw = w;
-                  gh = gw / aspect;
-              }
-
-              self.screenView.transform = CGAffineTransformIdentity;
-
-              [self scaleScreenViewToSize:CGSizeMake(gw, gh)
-                                    center:CGPointMake(w / 2.0, h / 2.0)];
-
-              NSString *mode =
-                  [NSUserDefaults.standardUserDefaults
-                   stringForKey:@"MKRenderMode"];
-
-              BOOL remastered =
-                  [mode isEqualToString:@"REMASTERED"];
-
-              self.screenView.layer.magnificationFilter =
-                  remastered ? kCAFilterLinear : kCAFilterNearest;
-
-              self.screenView.layer.minificationFilter =
-                  remastered ? kCAFilterLinear : kCAFilterNearest;
-
-              self.screenView.layer.contentsScale =
-                  UIScreen.mainScreen.scale;
-
-              if (_mkFPSLabel)
-              {
-                  _mkFPSLabel.frame = CGRectMake(w - 82, 8, 70, 28);
-                  [_rootContainer bringSubviewToFront:_mkFPSLabel];
-              }
-
-              UIView *modeLabel = [_rootContainer viewWithTag:9902];
+              UIView *modeLabel = [_rootContainer viewWithTag:9912];
               if (modeLabel)
-              {
-                  modeLabel.frame = CGRectMake(w / 2.0 - 64, 8, 128, 28);
                   [_rootContainer bringSubviewToFront:modeLabel];
-              }
 
               for (UIView *view in _rootContainer.subviews)
               {
-                  if ([view.accessibilityIdentifier isEqualToString:@"MK_FINAL_CONTROL"])
+                  if ([view.accessibilityIdentifier isEqualToString:@"MK_STABLE_CONTROL"])
                       [_rootContainer bringSubviewToFront:view];
               }
           }
 
-          - (void)viewDidLayoutSubviews
-          {
-              [super viewDidLayoutSubviews];
-              [self mkFinalApplyLayout];
-          }
-
-          - (UIButton *)mkFinalButton:(NSString *)title
-                               frame:(CGRect)frame
-                                 key:(NSInteger)key
+          - (UIButton *)mkStableButton:(NSString *)title
+                                 frame:(CGRect)frame
+                                   key:(NSInteger)key
           {
               UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
               b.frame = frame;
               b.tag = key;
-              b.accessibilityIdentifier = @"MK_FINAL_CONTROL";
+              b.accessibilityIdentifier = @"MK_STABLE_CONTROL";
 
               [b setTitle:title forState:UIControlStateNormal];
               [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
@@ -809,215 +728,118 @@ jobs:
                   [UIFont systemFontOfSize:13 weight:UIFontWeightBlack];
 
               b.backgroundColor =
-                  [UIColor colorWithWhite:0.0 alpha:0.34];
+                  [UIColor colorWithWhite:0.0 alpha:0.30];
 
               b.layer.cornerRadius = 13;
               b.layer.borderWidth = 1;
               b.layer.borderColor =
-                  [UIColor colorWithWhite:1 alpha:0.24].CGColor;
+                  [UIColor colorWithWhite:1 alpha:0.23].CGColor;
 
               [b addTarget:self
-                    action:@selector(mkFinalKeyDown:)
+                    action:@selector(mkStableKeyDown:)
           forControlEvents:UIControlEventTouchDown];
 
               [b addTarget:self
-                    action:@selector(mkFinalKeyUp:)
+                    action:@selector(mkStableKeyUp:)
           forControlEvents:UIControlEventTouchUpInside];
 
               [b addTarget:self
-                    action:@selector(mkFinalKeyUp:)
+                    action:@selector(mkStableKeyUp:)
           forControlEvents:UIControlEventTouchUpOutside];
 
               [b addTarget:self
-                    action:@selector(mkFinalKeyUp:)
+                    action:@selector(mkStableKeyUp:)
           forControlEvents:UIControlEventTouchCancel];
 
               return b;
           }
 
-          - (void)mkFinalKeyDown:(UIButton *)button
+          - (void)mkStableKeyDown:(UIButton *)button
           {
               [[DOSPadEmulator sharedInstance]
                sendKey:(int)button.tag
                pressed:YES];
           }
 
-          - (void)mkFinalKeyUp:(UIButton *)button
+          - (void)mkStableKeyUp:(UIButton *)button
           {
               [[DOSPadEmulator sharedInstance]
                sendKey:(int)button.tag
                pressed:NO];
           }
 
-          - (void)mkFinalRemoveControls
+          - (void)mkStableRemoveControls
           {
               for (UIView *view in [_rootContainer.subviews copy])
               {
-                  if ([view.accessibilityIdentifier isEqualToString:@"MK_FINAL_CONTROL"]
-                      || view.tag == 9902)
+                  if ([view.accessibilityIdentifier isEqualToString:@"MK_STABLE_CONTROL"]
+                      || view.tag == 9912)
                   {
                       [view removeFromSuperview];
                   }
               }
           }
 
-          - (void)mkFinalInstallControls
+          - (void)mkStableInstallControls
           {
               if (!_rootContainer)
                   return;
 
-              [self mkFinalRemoveControls];
+              [self mkStableRemoveControls];
 
               CGFloat w = CGRectGetWidth(_rootContainer.bounds);
               CGFloat h = CGRectGetHeight(_rootContainer.bounds);
-
               CGFloat d = 48;
 
               [_rootContainer addSubview:
-               [self mkFinalButton:@"▲"
-                             frame:CGRectMake(62, h - 150, d, d)
-                               key:22]];
-
+               [self mkStableButton:@"▲" frame:CGRectMake(62, h - 150, d, d) key:22]];
               [_rootContainer addSubview:
-               [self mkFinalButton:@"◀"
-                             frame:CGRectMake(12, h - 99, d, d)
-                               key:29]];
-
+               [self mkStableButton:@"◀" frame:CGRectMake(12, h - 99, d, d) key:29]];
               [_rootContainer addSubview:
-               [self mkFinalButton:@"▼"
-                             frame:CGRectMake(62, h - 99, d, d)
-                               key:27]];
-
+               [self mkStableButton:@"▼" frame:CGRectMake(62, h - 99, d, d) key:27]];
               [_rootContainer addSubview:
-               [self mkFinalButton:@"▶"
-                             frame:CGRectMake(112, h - 99, d, d)
-                               key:6]];
+               [self mkStableButton:@"▶" frame:CGRectMake(112, h - 99, d, d) key:6]];
 
               CGFloat a = 46;
               CGFloat ax = w - 164;
 
               [_rootContainer addSubview:
-               [self mkFinalButton:@"HP"
-                             frame:CGRectMake(ax, h - 150, a, a)
-                               key:24]];
+               [self mkStableButton:@"HP" frame:CGRectMake(ax, h - 150, a, a) key:24]];
+              [_rootContainer addSubview:
+               [self mkStableButton:@"HK" frame:CGRectMake(ax + 50, h - 150, a, a) key:12]];
+              [_rootContainer addSubview:
+               [self mkStableButton:@"LP" frame:CGRectMake(ax, h - 99, a, a) key:17]];
+              [_rootContainer addSubview:
+               [self mkStableButton:@"LK" frame:CGRectMake(ax + 50, h - 99, a, a) key:16]];
+              [_rootContainer addSubview:
+               [self mkStableButton:@"BLK" frame:CGRectMake(ax + 100, h - 125, a, a) key:13]];
 
               [_rootContainer addSubview:
-               [self mkFinalButton:@"HK"
-                             frame:CGRectMake(ax + 50, h - 150, a, a)
-                               key:12]];
-
+               [self mkStableButton:@"START" frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32) key:58]];
               [_rootContainer addSubview:
-               [self mkFinalButton:@"LP"
-                             frame:CGRectMake(ax, h - 99, a, a)
-                               key:17]];
-
-              [_rootContainer addSubview:
-               [self mkFinalButton:@"LK"
-                             frame:CGRectMake(ax + 50, h - 99, a, a)
-                               key:16]];
-
-              [_rootContainer addSubview:
-               [self mkFinalButton:@"BLK"
-                             frame:CGRectMake(ax + 100, h - 125, a, a)
-                               key:13]];
-
-              [_rootContainer addSubview:
-               [self mkFinalButton:@"START"
-                             frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32)
-                               key:58]];
-
-              [_rootContainer addSubview:
-               [self mkFinalButton:@"ESC"
-                             frame:CGRectMake(8, 8, 50, 30)
-                               key:41]];
+               [self mkStableButton:@"ESC" frame:CGRectMake(8, 8, 50, 30) key:41]];
 
               UILabel *mode = [[UILabel alloc] init];
-              mode.tag = 9902;
+              mode.tag = 9912;
               mode.text =
                   [NSUserDefaults.standardUserDefaults stringForKey:@"MKRenderMode"]
                   ?: @"CLASSIC";
               mode.textAlignment = NSTextAlignmentCenter;
               mode.textColor = UIColor.whiteColor;
-              mode.font =
-                  [UIFont systemFontOfSize:10 weight:UIFontWeightBlack];
-              mode.backgroundColor =
-                  [UIColor colorWithWhite:0 alpha:0.34];
+              mode.font = [UIFont systemFontOfSize:10 weight:UIFontWeightBlack];
+              mode.backgroundColor = [UIColor colorWithWhite:0 alpha:0.30];
               mode.layer.cornerRadius = 9;
               mode.clipsToBounds = YES;
               mode.userInteractionEnabled = NO;
+              mode.frame = CGRectMake(w / 2.0 - 64, 8, 128, 28);
               [_rootContainer addSubview:mode];
 
-              [self mkFinalStartFPS];
-              [self mkFinalApplyLayout];
+              // Native iDOS scaling only. No custom transform here.
+              [self updateScreen];
+              [self mkStableHideIDOSChrome];
           }
 
-          - (void)mkFinalStartFPS
-          {
-              if (!_mkFPSLabel)
-              {
-                  _mkFPSLabel = [[UILabel alloc] init];
-                  _mkFPSLabel.text = @"FPS --";
-                  _mkFPSLabel.textAlignment = NSTextAlignmentCenter;
-                  _mkFPSLabel.textColor =
-                      [UIColor colorWithRed:0.45 green:1 blue:0.42 alpha:1];
-                  _mkFPSLabel.font =
-                      [UIFont monospacedDigitSystemFontOfSize:11
-                                                       weight:UIFontWeightBlack];
-                  _mkFPSLabel.backgroundColor =
-                      [UIColor colorWithWhite:0 alpha:0.42];
-                  _mkFPSLabel.layer.cornerRadius = 9;
-                  _mkFPSLabel.clipsToBounds = YES;
-                  _mkFPSLabel.userInteractionEnabled = NO;
-              }
-
-              if (_mkFPSLabel.superview != _rootContainer)
-              {
-                  [_mkFPSLabel removeFromSuperview];
-                  [_rootContainer addSubview:_mkFPSLabel];
-              }
-
-              if (!_mkFPSLink)
-              {
-                  _mkFPSLastCounter = MKRenderFrameCounter();
-                  _mkFPSLastTime = 0;
-
-                  _mkFPSLink =
-                      [CADisplayLink
-                       displayLinkWithTarget:self
-                       selector:@selector(mkFinalFPSTick:)];
-
-                  [_mkFPSLink addToRunLoop:NSRunLoop.mainRunLoop
-                                  forMode:NSRunLoopCommonModes];
-              }
-          }
-
-          - (void)mkFinalFPSTick:(CADisplayLink *)link
-          {
-              if (_mkFPSLastTime <= 0)
-              {
-                  _mkFPSLastTime = link.timestamp;
-                  _mkFPSLastCounter = MKRenderFrameCounter();
-                  return;
-              }
-
-              CFTimeInterval elapsed =
-                  link.timestamp - _mkFPSLastTime;
-
-              if (elapsed >= 0.50)
-              {
-                  unsigned long now = MKRenderFrameCounter();
-                  unsigned long delta = now - _mkFPSLastCounter;
-                  double fps = (double)delta / elapsed;
-
-                  _mkFPSLabel.text =
-                      [NSString stringWithFormat:@"FPS %.0f", fps];
-
-                  _mkFPSLastCounter = now;
-                  _mkFPSLastTime = link.timestamp;
-              }
-          }
-
-          // END MKFINAL_GAME_UI
+          // END MKSTABLE_GAME_UI
               '''
 
               text = text.replace(marker, methods + marker, 1)
@@ -1032,8 +854,7 @@ jobs:
 
               replacement = (
                   r'\1'
-                  '\n\t[self mkFinalInstallControls];'
-                  '\n\t[self mkFinalApplyLayout];'
+                  '\n\t[self mkStableInstallControls];'
               )
 
               text, count = layout_pattern.subn(
@@ -1045,46 +866,9 @@ jobs:
               if count != 1:
                   raise SystemExit("ERROR: VIEW LAYOUT PATCH FAILED")
 
-              start_marker = (
-                  '[[self findGamepad] '
-                  'applyConfiguration:_gamepadConfig];'
-              )
-
-              if start_marker not in text:
-                  raise SystemExit("ERROR: EMULATOR START MARKER NOT FOUND")
-
-              text = text.replace(
-                  start_marker,
-                  start_marker +
-                  '\n\t[self mkFinalInstallControls];'
-                  '\n\t[self mkFinalApplyLayout];',
-                  1
-              )
-
-          if "MKFINAL_DEALLOC_FPS" not in text:
-              old = (
-                  "- (void)dealloc\n"
-                  "{\n"
-                  "\t[[NSNotificationCenter defaultCenter] removeObserver:self];\n"
-                  "}"
-              )
-
-              new = (
-                  "- (void)dealloc\n"
-                  "{\n"
-                  "    // MKFINAL_DEALLOC_FPS\n"
-                  "    [_mkFPSLink invalidate];\n"
-                  "    _mkFPSLink = nil;\n"
-                  "\t[[NSNotificationCenter defaultCenter] removeObserver:self];\n"
-                  "}"
-              )
-
-              if old in text:
-                  text = text.replace(old, new, 1)
-
           vc.write_text(text, encoding="utf-8")
 
-          print("ALL FINAL PATCHES APPLIED")
+          print("ALL STABLE PATCHES APPLIED")
           PY
 
       - name: Apply branding and landscape
@@ -1275,9 +1059,10 @@ jobs:
           grep -n "MK_REAL_RENDER_FPS" "$RENDER_CPP"
           grep -n "MKFINAL_AUTOBOOT" dospad/dospad/Main/DOSPadEmulator.m
           grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
-          grep -n "MKFINAL_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "MKFINAL_SCALE_OVERRIDE" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "MKRenderFrameCounter" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKSTABLE_FILTER" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
+                    grep -n "MKRenderFrameCounter" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
           echo "V0.9 PATCHES OK"
 
@@ -1367,15 +1152,15 @@ jobs:
           APP=$(cat output/app-path.txt)
 
           {
-            echo "MK1 v0.9 CLASSIC + REMASTERED TEST"
+            echo "MK1 v0.9.1 STABLE CLASSIC + REMASTERED"
             echo
             echo "ORIGINAL MK1.EXE: YES"
             echo "FULL ORIGINAL GAME DATA: YES"
             echo "CLASSIC: scaler=none + nearest final scale"
-            echo "REMASTERED: scaler=hq2x forced + linear final scale"
+            echo "REMASTERED: scaler=hq2x + linear final scale"
             echo "CORE: simple"
             echo "CYCLES: max 95%"
-            echo "FPS COUNTER: DOSBox completed render frames"
+            echo "FPS COUNTER: DISABLED FOR STABILITY"
             echo "ACTIVE CONFIG: MK1Final/config/dospad.cfg"
             echo "REMASTERED NOTE: enhanced scaler, not replacement HD assets"
             echo "CLEAN GAME VIEW: YES"
@@ -1403,17 +1188,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9-REAL-Remaster-KSign.ipa
+            output/MK1-v0.9.1-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.9-REAL-Remaster-KSign.ipa
+          ls -lh output/MK1-v0.9.1-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.9
+      - name: Upload MK1 v0.9.1 Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9-REAL-Remaster-KSign
+          name: MK1-v0.9.1-STABLE-KSign
           path: |
-            output/MK1-v0.9-REAL-Remaster-KSign.ipa
+            output/MK1-v0.9.1-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1421,7 +1206,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9-FAIL
+          name: MK1-v0.9.1-STABLE-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
