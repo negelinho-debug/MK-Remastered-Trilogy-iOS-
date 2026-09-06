@@ -35,7 +35,10 @@ jobs:
           python3 -m pip install \
             --user pillow
 
+          echo "===== XCODE ====="
           xcodebuild -version
+
+          echo "===== INNOEXTRACT ====="
           innoextract --version
 
       # ==========================================================
@@ -66,7 +69,7 @@ jobs:
           mkdir -p output
 
       # ==========================================================
-      # GET INSTALLERS FROM REPOSITORY
+      # INSTALLERS FROM REPOSITORY
       # ==========================================================
 
       - name: Collect installers from repository
@@ -76,11 +79,13 @@ jobs:
           COUNT=0
 
           while IFS= read -r FILE; do
+
             [ -z "$FILE" ] && continue
 
             COUNT=$((COUNT + 1))
 
-            echo "FOUND: $FILE"
+            echo "FOUND:"
+            echo "$FILE"
 
             cp "$FILE" \
               "raw-installers/repo_${COUNT}.exe"
@@ -99,11 +104,13 @@ jobs:
               | sort
           )
 
+          echo
           echo "===== REPOSITORY INSTALLERS ====="
+
           ls -lh raw-installers || true
 
       # ==========================================================
-      # GET BIG INSTALLER FROM RELEASE
+      # RELEASE INSTALLERS
       # ==========================================================
 
       - name: Download installers from latest Release
@@ -123,17 +130,21 @@ jobs:
               --jq '.[0].tagName'
           )
 
-          echo "TAG=$TAG"
+          echo "LATEST TAG:"
+          echo "$TAG"
 
           if [ -n "$TAG" ]; then
+
             gh release download "$TAG" \
               --dir release-files \
               --pattern "*.exe"
+
           fi
 
           N=0
 
           while IFS= read -r FILE; do
+
             [ -z "$FILE" ] && continue
 
             N=$((N + 1))
@@ -148,13 +159,15 @@ jobs:
               | sort
           )
 
-          echo "===== ALL RAW INSTALLERS ====="
+          echo
+          echo "===== ALL INSTALLERS ====="
+
           ls -lh raw-installers
 
           exit 0
 
       # ==========================================================
-      # REMOVE DUPLICATES
+      # DEDUPLICATE
       # ==========================================================
 
       - name: Deduplicate installers
@@ -162,20 +175,25 @@ jobs:
           set -e
 
           for FILE in raw-installers/*.exe; do
+
             [ -f "$FILE" ] || continue
 
             HASH=$(
               shasum -a 256 "$FILE" \
-                | awk '{print $1}'
+              | awk '{print $1}'
             )
 
             DEST="installers/${HASH}.exe"
 
             if [ ! -f "$DEST" ]; then
+
               cp "$FILE" "$DEST"
+
             fi
+
           done
 
+          echo
           echo "===== UNIQUE INSTALLERS ====="
 
           ls -lh installers
@@ -191,8 +209,11 @@ jobs:
           echo "COUNT=$COUNT"
 
           if [ "$COUNT" -lt 3 ]; then
-            echo "ERROR: NEED 3 INSTALLERS"
+
+            echo "ERROR: NEED THREE INSTALLERS"
+
             exit 1
+
           fi
 
       # ==========================================================
@@ -206,17 +227,20 @@ jobs:
           N=0
 
           while IFS= read -r FILE; do
+
             [ -z "$FILE" ] && continue
 
             N=$((N + 1))
+
             DEST="extracted/pkg${N}"
 
             mkdir -p "$DEST"
 
             echo
-            echo "================================"
-            echo "EXTRACTING: $FILE"
-            echo "================================"
+            echo "====================================="
+            echo "EXTRACTING"
+            echo "$FILE"
+            echo "====================================="
 
             set +e
 
@@ -228,12 +252,15 @@ jobs:
             RESULT=$?
 
             if [ "$RESULT" -ne 0 ]; then
-              echo "Trying 7z..."
+
+              echo "innoextract failed"
+              echo "trying 7z"
 
               7z x \
                 "$FILE" \
                 "-o$DEST" \
                 -y
+
             fi
 
             set -e
@@ -246,7 +273,7 @@ jobs:
           )
 
           echo
-          echo "===== GAME EXECUTABLES ====="
+          echo "===== GAME EXES ====="
 
           find extracted \
             -type f \
@@ -259,12 +286,14 @@ jobs:
 
       # ==========================================================
       # NORMALIZE
-      # IMPORTANT: IGNORE __support
       # ==========================================================
 
       - name: Normalize game folders
         run: |
           set -e
+
+          echo
+          echo "===== FIND REAL GAME EXES ====="
 
           MK1_EXE=$(
             find extracted \
@@ -295,17 +324,17 @@ jobs:
           echo "MK3_EXE=$MK3_EXE"
 
           if [ -z "$MK1_EXE" ]; then
-            echo "ERROR: REAL MK1.EXE NOT FOUND"
+            echo "ERROR: MK1.EXE NOT FOUND"
             exit 1
           fi
 
           if [ -z "$MK2_EXE" ]; then
-            echo "ERROR: REAL MK2.EXE NOT FOUND"
+            echo "ERROR: MK2.EXE NOT FOUND"
             exit 1
           fi
 
           if [ -z "$MK3_EXE" ]; then
-            echo "ERROR: REAL MK3.EXE NOT FOUND"
+            echo "ERROR: MK3.EXE NOT FOUND"
             exit 1
           fi
 
@@ -313,6 +342,7 @@ jobs:
           MK2_SRC="$(dirname "$MK2_EXE")"
           MK3_SRC="$(dirname "$MK3_EXE")"
 
+          echo
           echo "MK1_SRC=$MK1_SRC"
           echo "MK2_SRC=$MK2_SRC"
           echo "MK3_SRC=$MK3_SRC"
@@ -329,6 +359,7 @@ jobs:
           cp -R "$MK2_SRC"/. games/mk2/
           cp -R "$MK3_SRC"/. games/mk3/
 
+          echo
           echo "===== VALIDATE ====="
 
           test -n "$(
@@ -355,10 +386,12 @@ jobs:
               | head -1
           )"
 
-          echo "MK1 FILES=$(find games/mk1 -type f | wc -l)"
-          echo "MK2 FILES=$(find games/mk2 -type f | wc -l)"
-          echo "MK3 FILES=$(find games/mk3 -type f | wc -l)"
+          echo
+          echo "MK1 FILES: $(find games/mk1 -type f | wc -l)"
+          echo "MK2 FILES: $(find games/mk2 -type f | wc -l)"
+          echo "MK3 FILES: $(find games/mk3 -type f | wc -l)"
 
+          echo
           echo "NORMALIZATION SUCCESS"
 
       # ==========================================================
@@ -374,15 +407,18 @@ jobs:
             https://github.com/litchie/dospad.git \
             dospad
 
+          echo
+          echo "===== IDOS PROJECT ====="
+
           xcodebuild \
             -project dospad/dospad.xcodeproj \
             -list
 
       # ==========================================================
-      # CONFIG
+      # GAME CONFIGS
       # ==========================================================
 
-      - name: Create game DOS configs
+      - name: Create optimized DOS configs
         run: |
           set -e
 
@@ -402,13 +438,8 @@ jobs:
           import re
 
           for game in ["mk1", "mk2", "mk3"]:
-              path = Path(
-                  f"games/{game}/config/dospad.cfg"
-              )
-
-              text = path.read_text(
-                  errors="ignore"
-              )
+              path = Path(f"games/{game}/config/dospad.cfg")
+              text = path.read_text(errors="ignore")
 
               text = re.sub(
                   r"(?m)^frameskip\s*=.*$",
@@ -434,10 +465,10 @@ jobs:
           PY
 
       # ==========================================================
-      # AUTO BOOT COMMANDS
+      # AUTOBOOT
       # ==========================================================
 
-      - name: Create MK boot commands
+      - name: Create auto boot commands
         run: |
           set -e
 
@@ -494,10 +525,7 @@ jobs:
               encoding="utf-8"
           ).read()
 
-          marker = (
-              '[self.commandList '
-              'addObject:@"REM END AUTOMOUNT"];'
-          )
+          marker = '[self.commandList addObject:@"REM END AUTOMOUNT"];'
 
           if marker not in text:
               raise SystemExit(
@@ -505,6 +533,7 @@ jobs:
               )
 
           if "MKTRILOGY_AUTOBOOT" in text:
+              print("AUTOBOOT ALREADY INSTALLED")
               raise SystemExit(0)
 
           patch = marker + r'''
@@ -525,16 +554,20 @@ jobs:
 
                   NSString *mkCommands =
                       [NSString
-                       stringWithContentsOfFile:mkBootFile
-                       encoding:NSUTF8StringEncoding
-                       error:&mkError];
+                       stringWithContentsOfFile:
+                       mkBootFile
+                       encoding:
+                       NSUTF8StringEncoding
+                       error:
+                       &mkError];
 
                   if (mkCommands.length > 0)
                   {
                       NSArray *mkLines =
                           [mkCommands
                            componentsSeparatedByCharactersInSet:
-                           [NSCharacterSet newlineCharacterSet]];
+                           [NSCharacterSet
+                            newlineCharacterSet]];
 
                       for (NSString *rawLine in mkLines)
                       {
@@ -572,7 +605,7 @@ jobs:
           PY
 
       # ==========================================================
-      # NATIVE TRILOGY MENU
+      # TRILOGY MENU
       # ==========================================================
 
       - name: Add MK Trilogy launcher
@@ -593,18 +626,17 @@ jobs:
           ).read()
 
           if "MKTRILOGY_MAIN_MENU" in text:
+              print("MENU ALREADY INSTALLED")
               raise SystemExit(0)
 
-          import_marker = (
-              '#import <AVFoundation/AVFoundation.h>'
-          )
+          marker = '#import <AVFoundation/AVFoundation.h>'
 
-          if import_marker not in text:
+          if marker not in text:
               raise SystemExit(
                   "ERROR: APP DELEGATE IMPORT MARKER NOT FOUND"
               )
 
-          menu_code = r'''
+          menu = r'''
 
           // ======================================================
           // MKTRILOGY_MAIN_MENU
@@ -645,6 +677,12 @@ jobs:
           @property(nonatomic, strong)
           UIButton *mk3Button;
 
+          @property(nonatomic, strong)
+          UIButton *settingsButton;
+
+          @property(nonatomic, strong)
+          UIButton *creditsButton;
+
           @end
 
 
@@ -652,7 +690,7 @@ jobs:
           MKTrilogyLauncherViewController
 
 
-          - (UIButton *)mkButton:
+          - (UIButton *)mkGameButton:
               (NSString *)title
               game:(NSString *)game
           {
@@ -684,11 +722,8 @@ jobs:
                    blue:0.02
                    alpha:1.0];
 
-              button.layer.cornerRadius =
-                  14;
-
-              button.layer.borderWidth =
-                  1;
+              button.layer.cornerRadius = 14;
+              button.layer.borderWidth = 1;
 
               button.layer.borderColor =
                   [UIColor
@@ -700,6 +735,38 @@ jobs:
                action:@selector(gamePressed:)
                forControlEvents:
                UIControlEventTouchUpInside];
+
+              return button;
+          }
+
+
+          - (UIButton *)mkSmallButton:
+              (NSString *)title
+          {
+              UIButton *button =
+                  [UIButton
+                   buttonWithType:UIButtonTypeSystem];
+
+              [button
+               setTitle:title
+               forState:UIControlStateNormal];
+
+              [button
+               setTitleColor:
+               UIColor.whiteColor
+               forState:UIControlStateNormal];
+
+              button.titleLabel.font =
+                  [UIFont
+                   systemFontOfSize:14
+                   weight:UIFontWeightBold];
+
+              button.backgroundColor =
+                  [UIColor
+                   colorWithWhite:0.10
+                   alpha:1.0];
+
+              button.layer.cornerRadius = 11;
 
               return button;
           }
@@ -717,24 +784,24 @@ jobs:
                    alpha:1.0];
 
 
-              UIView *redGlow =
+              UIView *glow =
                   [[UIView alloc]
                    initWithFrame:CGRectZero];
 
-              redGlow.tag =
-                  7700;
+              glow.tag = 7700;
 
-              redGlow.backgroundColor =
+              glow.userInteractionEnabled =
+                  NO;
+
+              glow.backgroundColor =
                   [UIColor
-                   colorWithRed:0.28
+                   colorWithRed:0.27
                    green:0.01
                    blue:0.015
                    alpha:0.38];
 
-              redGlow.userInteractionEnabled =
-                  NO;
-
-              [self.view addSubview:redGlow];
+              [self.view
+               addSubview:glow];
 
 
               self.titleLabel =
@@ -769,10 +836,10 @@ jobs:
 
               self.subtitleLabel.textColor =
                   [UIColor
-                   colorWithRed:1
+                   colorWithRed:1.0
                    green:0.10
                    blue:0.08
-                   alpha:1];
+                   alpha:1.0];
 
               self.subtitleLabel.font =
                   [UIFont
@@ -795,7 +862,7 @@ jobs:
               self.chooseLabel.textColor =
                   [UIColor
                    colorWithWhite:0.80
-                   alpha:1];
+                   alpha:1.0];
 
               self.chooseLabel.font =
                   [UIFont
@@ -821,8 +888,7 @@ jobs:
                    boolForKey:@"MKEnhanced"];
 
 
-              self.filterControl
-                  .selectedSegmentIndex =
+              self.filterControl.selectedSegmentIndex =
                   enhanced ? 1 : 0;
 
 
@@ -834,7 +900,7 @@ jobs:
                        colorWithRed:0.60
                        green:0.025
                        blue:0.025
-                       alpha:1];
+                       alpha:1.0];
               }
 
 
@@ -851,30 +917,56 @@ jobs:
 
               self.mk1Button =
                   [self
-                   mkButton:@"MORTAL KOMBAT"
+                   mkGameButton:@"MORTAL KOMBAT"
                    game:@"mk1"];
 
 
               self.mk2Button =
                   [self
-                   mkButton:@"MORTAL KOMBAT II"
+                   mkGameButton:@"MORTAL KOMBAT II"
                    game:@"mk2"];
 
 
               self.mk3Button =
                   [self
-                   mkButton:@"MORTAL KOMBAT 3"
+                   mkGameButton:@"MORTAL KOMBAT 3"
                    game:@"mk3"];
 
 
-              [self.view
-               addSubview:self.mk1Button];
+              [self.view addSubview:self.mk1Button];
+              [self.view addSubview:self.mk2Button];
+              [self.view addSubview:self.mk3Button];
+
+
+              self.settingsButton =
+                  [self
+                   mkSmallButton:@"SETTINGS"];
+
+
+              self.creditsButton =
+                  [self
+                   mkSmallButton:@"CREDITS"];
+
+
+              [self.settingsButton
+               addTarget:self
+               action:@selector(settingsPressed)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
+
+              [self.creditsButton
+               addTarget:self
+               action:@selector(creditsPressed)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
 
               [self.view
-               addSubview:self.mk2Button];
+               addSubview:self.settingsButton];
 
               [self.view
-               addSubview:self.mk3Button];
+               addSubview:self.creditsButton];
           }
 
 
@@ -895,6 +987,59 @@ jobs:
           }
 
 
+          - (void)settingsPressed
+          {
+              UIAlertController *alert =
+                  [UIAlertController
+                   alertControllerWithTitle:
+                   @"SETTINGS"
+                   message:
+                   @"CLASSIC = ORIGINAL PIXELS\n"
+                    "CRT+ = SCANLINE FILTER\n\n"
+                    "TOUCH CONTROLS ARE ENABLED"
+                   preferredStyle:
+                   UIAlertControllerStyleAlert];
+
+              [alert
+               addAction:
+               [UIAlertAction
+                actionWithTitle:@"OK"
+                style:UIAlertActionStyleDefault
+                handler:nil]];
+
+              [self
+               presentViewController:alert
+               animated:YES
+               completion:nil];
+          }
+
+
+          - (void)creditsPressed
+          {
+              UIAlertController *alert =
+                  [UIAlertController
+                   alertControllerWithTitle:
+                   @"CREDITS"
+                   message:
+                   @"MK REMASTERED TRILOGY\n"
+                    @"iOS CLASSIC BUILD"
+                   preferredStyle:
+                   UIAlertControllerStyleAlert];
+
+              [alert
+               addAction:
+               [UIAlertAction
+                actionWithTitle:@"OK"
+                style:UIAlertActionStyleDefault
+                handler:nil]];
+
+              [self
+               presentViewController:alert
+               animated:YES
+               completion:nil];
+          }
+
+
           - (void)gamePressed:
               (UIButton *)button
           {
@@ -907,14 +1052,9 @@ jobs:
               self.chooseLabel.text =
                   @"LOADING...";
 
-              self.mk1Button.enabled =
-                  NO;
-
-              self.mk2Button.enabled =
-                  NO;
-
-              self.mk3Button.enabled =
-                  NO;
+              self.mk1Button.enabled = NO;
+              self.mk2Button.enabled = NO;
+              self.mk3Button.enabled = NO;
 
               [self.owner
                mkLaunchGame:game];
@@ -953,7 +1093,7 @@ jobs:
               self.titleLabel.frame =
                   CGRectMake(
                       0,
-                      12,
+                      10,
                       width,
                       48
                   );
@@ -962,7 +1102,7 @@ jobs:
               self.subtitleLabel.frame =
                   CGRectMake(
                       0,
-                      58,
+                      56,
                       width,
                       28
                   );
@@ -971,7 +1111,7 @@ jobs:
               self.chooseLabel.frame =
                   CGRectMake(
                       0,
-                      88,
+                      86,
                       width,
                       20
                   );
@@ -980,7 +1120,7 @@ jobs:
               self.filterControl.frame =
                   CGRectMake(
                       (width - 250) / 2,
-                      115,
+                      112,
                       250,
                       31
                   );
@@ -998,15 +1138,15 @@ jobs:
 
 
               CGFloat buttonHeight =
-                  55;
+                  52;
 
 
               CGFloat gap =
-                  12;
+                  10;
 
 
               CGFloat y =
-                  168;
+                  160;
 
 
               self.mk1Button.frame =
@@ -1021,9 +1161,7 @@ jobs:
               self.mk2Button.frame =
                   CGRectMake(
                       x,
-                      y +
-                      buttonHeight +
-                      gap,
+                      y + buttonHeight + gap,
                       buttonWidth,
                       buttonHeight
                   );
@@ -1032,39 +1170,44 @@ jobs:
               self.mk3Button.frame =
                   CGRectMake(
                       x,
-                      y +
-                      (buttonHeight + gap) * 2,
+                      y + (buttonHeight + gap) * 2,
                       buttonWidth,
                       buttonHeight
                   );
 
 
-              if (
-                  CGRectGetMaxY(
-                      self.mk3Button.frame
-                  ) > height - 10
-              )
+              CGFloat smallWidth =
+                  (buttonWidth - 10) / 2;
+
+
+              CGFloat smallY =
+                  y +
+                  (buttonHeight + gap) * 3 +
+                  2;
+
+
+              self.settingsButton.frame =
+                  CGRectMake(
+                      x,
+                      smallY,
+                      smallWidth,
+                      40
+                  );
+
+
+              self.creditsButton.frame =
+                  CGRectMake(
+                      x + smallWidth + 10,
+                      smallY,
+                      smallWidth,
+                      40
+                  );
+
+
+              if (smallY + 45 > height)
               {
-                  CGFloat scale =
-                      0.90;
-
-                  self.mk1Button.transform =
-                      CGAffineTransformMakeScale(
-                          scale,
-                          scale
-                      );
-
-                  self.mk2Button.transform =
-                      CGAffineTransformMakeScale(
-                          scale,
-                          scale
-                      );
-
-                  self.mk3Button.transform =
-                      CGAffineTransformMakeScale(
-                          scale,
-                          scale
-                      );
+                  self.settingsButton.hidden = YES;
+                  self.creditsButton.hidden = YES;
               }
           }
 
@@ -1086,13 +1229,12 @@ jobs:
           @end
 
           // ===== END MKTRILOGY_MAIN_MENU =====
+
           '''
 
           text = text.replace(
-              import_marker,
-              import_marker +
-              "\n" +
-              menu_code,
+              marker,
+              marker + "\n" + menu,
               1
           )
 
@@ -1152,8 +1294,7 @@ jobs:
               }
 
 
-              MKTrilogyLauncherViewController
-                  *launcher =
+              MKTrilogyLauncherViewController *launcher =
                   [[MKTrilogyLauncherViewController
                     alloc] init];
 
@@ -1300,14 +1441,12 @@ jobs:
                         handler:nil]];
 
 
-                      [
-                       self.emulatorController
+                      [self.emulatorController
                        .presentedViewController
                        presentViewController:
                        alert
                        animated:YES
-                       completion:nil
-                      ];
+                       completion:nil];
 
                       return;
                   }
@@ -1326,8 +1465,7 @@ jobs:
 
 
               [DOSPadEmulator
-               sharedInstance]
-                  .workingDirectory =
+               sharedInstance].workingDirectory =
                   [NSURL
                    fileURLWithPath:
                    destination
@@ -1355,8 +1493,7 @@ jobs:
 
           text = text.replace(
               method_marker,
-              methods +
-              method_marker,
+              methods + method_marker,
               1
           )
 
@@ -1369,7 +1506,7 @@ jobs:
 
 
           print(
-              "TRILOGY MENU PATCH OK"
+              "MK TRILOGY MENU INSTALLED"
           )
           PY
 
@@ -1396,40 +1533,37 @@ jobs:
           ).read()
 
 
-          if (
-              '#import <QuartzCore/QuartzCore.h>'
-              not in text
-          ):
-              marker = (
-                  '#import <UIKit/UIKit.h>'
-              )
+          if '#import <QuartzCore/QuartzCore.h>' not in text:
 
-              if marker not in text:
+              import_marker = '#import <UIKit/UIKit.h>'
+
+              if import_marker not in text:
                   raise SystemExit(
                       "ERROR: UIKIT IMPORT NOT FOUND"
                   )
 
               text = text.replace(
-                  marker,
-                  marker +
+                  import_marker,
+                  import_marker +
                   '\n#import <QuartzCore/QuartzCore.h>',
                   1
               )
 
 
-          if (
-              "MKTRILOGY_SAFE_TOUCH"
-              in text
-          ):
+          if "MKTRILOGY_SAFE_TOUCH" in text:
+
+              print(
+                  "TOUCH PATCH ALREADY INSTALLED"
+              )
+
               raise SystemExit(0)
 
 
-          marker = (
-              '// MARK: DPGamepadDelegate'
-          )
+          marker = '// MARK: DPGamepadDelegate'
 
 
           if marker not in text:
+
               raise SystemExit(
                   "ERROR: GAMEPAD MARKER NOT FOUND"
               )
@@ -1478,33 +1612,26 @@ jobs:
 
 
               [button
-               setTitle:
-               title
-               forState:
-               UIControlStateNormal];
+               setTitle:title
+               forState:UIControlStateNormal];
 
 
               [button
                setTitleColor:
                UIColor.whiteColor
-               forState:
-               UIControlStateNormal];
+               forState:UIControlStateNormal];
 
 
               button.titleLabel.font =
                   [UIFont
-                   systemFontOfSize:
-                   14
-                   weight:
-                   UIFontWeightBlack];
+                   systemFontOfSize:14
+                   weight:UIFontWeightBlack];
 
 
               button.backgroundColor =
                   [UIColor
-                   colorWithWhite:
-                   0
-                   alpha:
-                   0.48];
+                   colorWithWhite:0
+                   alpha:0.48];
 
 
               button.layer.cornerRadius =
@@ -1517,10 +1644,8 @@ jobs:
 
               button.layer.borderColor =
                   [UIColor
-                   colorWithWhite:
-                   1
-                   alpha:
-                   0.32].CGColor;
+                   colorWithWhite:1
+                   alpha:0.32].CGColor;
 
 
               [button
@@ -1587,140 +1712,16 @@ jobs:
                    copy];
 
 
-              for (
-                  UIView *view
-                  in views
-              )
+              for (UIView *view in views)
               {
-                  if (
-                      [view.accessibilityIdentifier
+                  if ([view.accessibilityIdentifier
                        isEqualToString:
-                       @"MK_TOUCH"]
-                  )
+                       @"MK_TOUCH"])
                   {
                       [view
                        removeFromSuperview];
                   }
               }
-          }
-
-
-          - (void)mkPauseMenu
-          {
-              dospad_pause();
-
-
-              NSString *game =
-                  [[self
-                    mkCurrentGame]
-                   uppercaseString];
-
-
-              NSString *fx =
-                  [[NSUserDefaults
-                    standardUserDefaults]
-                   boolForKey:
-                   @"MKEnhanced"]
-                  ? @"CRT+ ON"
-                  : @"CLASSIC";
-
-
-              NSString *message =
-                  [NSString
-                   stringWithFormat:
-                   @"%@\n%@",
-                   game,
-                   fx];
-
-
-              UIAlertController *alert =
-                  [UIAlertController
-                   alertControllerWithTitle:
-                   @"PAUSED"
-                   message:
-                   message
-                   preferredStyle:
-                   UIAlertControllerStyleAlert];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:
-                @"RESUME"
-                style:
-                UIAlertActionStyleDefault
-                handler:
-                ^(UIAlertAction *action)
-                {
-                    dospad_resume();
-                }]];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:
-                @"SEND ESC"
-                style:
-                UIAlertActionStyleDefault
-                handler:
-                ^(UIAlertAction *action)
-                {
-                    dospad_resume();
-
-                    [[DOSPadEmulator
-                      sharedInstance]
-                     sendKey:
-                     41];
-                }]];
-
-
-              [alert
-               addAction:
-               [UIAlertAction
-                actionWithTitle:
-                @"TOGGLE CRT+"
-                style:
-                UIAlertActionStyleDefault
-                handler:
-                ^(UIAlertAction *action)
-                {
-                    BOOL enabled =
-                        [[NSUserDefaults
-                          standardUserDefaults]
-                         boolForKey:
-                         @"MKEnhanced"];
-
-
-                    [[NSUserDefaults
-                      standardUserDefaults]
-                     setBool:
-                     !enabled
-                     forKey:
-                     @"MKEnhanced"];
-
-
-                    [[NSUserDefaults
-                      standardUserDefaults]
-                     synchronize];
-
-
-                    [self
-                     mkApplyCRT];
-
-
-                    dospad_resume();
-                }]];
-
-
-              [self
-               presentViewController:
-               alert
-               animated:
-               YES
-               completion:
-               nil];
           }
 
 
@@ -1816,11 +1817,9 @@ jobs:
                   );
 
 
-              for (
-                  CGFloat y = 1;
-                  y < height;
-                  y += 4
-              )
+              for (CGFloat y = 1;
+                   y < height;
+                   y += 4)
               {
                   UIView *line =
                       [[UIView alloc]
@@ -1883,22 +1882,134 @@ jobs:
                overlay];
 
 
-              for (
-                  UIView *view
-                  in _rootContainer.subviews
-              )
+              for (UIView *view
+                   in _rootContainer.subviews)
               {
-                  if (
-                      [view.accessibilityIdentifier
+                  if ([view.accessibilityIdentifier
                        isEqualToString:
-                       @"MK_TOUCH"]
-                  )
+                       @"MK_TOUCH"])
                   {
                       [_rootContainer
                        bringSubviewToFront:
                        view];
                   }
               }
+          }
+
+
+          - (void)mkPauseMenu
+          {
+              dospad_pause();
+
+
+              NSString *game =
+                  [[self
+                    mkCurrentGame]
+                   uppercaseString];
+
+
+              NSString *fx =
+                  [[NSUserDefaults
+                    standardUserDefaults]
+                   boolForKey:
+                   @"MKEnhanced"]
+                  ? @"CRT+ ON"
+                  : @"CLASSIC";
+
+
+              NSString *message =
+                  [NSString
+                   stringWithFormat:
+                   @"%@\n%@",
+                   game,
+                   fx];
+
+
+              UIAlertController *alert =
+                  [UIAlertController
+                   alertControllerWithTitle:
+                   @"PAUSED"
+                   message:
+                   message
+                   preferredStyle:
+                   UIAlertControllerStyleAlert];
+
+
+              [alert
+               addAction:
+               [UIAlertAction
+                actionWithTitle:
+                @"RESUME"
+                style:
+                UIAlertActionStyleDefault
+                handler:
+                ^(UIAlertAction *action)
+                {
+                    dospad_resume();
+                }]];
+
+
+              [alert
+               addAction:
+               [UIAlertAction
+                actionWithTitle:
+                @"SEND ESC"
+                style:
+                UIAlertActionStyleDefault
+                handler:
+                ^(UIAlertAction *action)
+                {
+                    dospad_resume();
+
+                    [[DOSPadEmulator
+                      sharedInstance]
+                     sendKey:41];
+                }]];
+
+
+              [alert
+               addAction:
+               [UIAlertAction
+                actionWithTitle:
+                @"TOGGLE CRT+"
+                style:
+                UIAlertActionStyleDefault
+                handler:
+                ^(UIAlertAction *action)
+                {
+                    BOOL enabled =
+                        [[NSUserDefaults
+                          standardUserDefaults]
+                         boolForKey:
+                         @"MKEnhanced"];
+
+
+                    [[NSUserDefaults
+                      standardUserDefaults]
+                     setBool:
+                     !enabled
+                     forKey:
+                     @"MKEnhanced"];
+
+
+                    [[NSUserDefaults
+                      standardUserDefaults]
+                     synchronize];
+
+
+                    [self mkApplyCRT];
+
+                    dospad_resume();
+                }]];
+
+
+              [self
+               presentViewController:
+               alert
+               animated:
+               YES
+               completion:
+               nil];
           }
 
 
@@ -1912,14 +2023,14 @@ jobs:
                mkRemoveTouchControls];
 
 
-              DPGamepad *originalGamepad =
+              DPGamepad *oldPad =
                   [self
                    findGamepad];
 
 
-              if (originalGamepad)
+              if (oldPad)
               {
-                  originalGamepad.hidden =
+                  oldPad.hidden =
                       YES;
               }
 
@@ -1975,19 +2086,15 @@ jobs:
                   58;
 
 
-              if (
-                  [game
+              if ([game
                    isEqualToString:
-                   @"mk1"]
-              )
+                   @"mk1"])
               {
-                  // S Z C X
                   up = 22;
                   left = 29;
                   right = 6;
                   down = 27;
 
-                  // U N J I M
                   hp = 24;
                   lp = 17;
                   block = 13;
@@ -1998,11 +2105,9 @@ jobs:
               }
 
 
-              else if (
-                  [game
-                   isEqualToString:
-                   @"mk2"]
-              )
+              else if ([game
+                        isEqualToString:
+                        @"mk2"])
               {
                   up = 82;
                   down = 81;
@@ -2102,21 +2207,10 @@ jobs:
                    right];
 
 
-              [_rootContainer
-               addSubview:
-               upButton];
-
-              [_rootContainer
-               addSubview:
-               leftButton];
-
-              [_rootContainer
-               addSubview:
-               downButton];
-
-              [_rootContainer
-               addSubview:
-               rightButton];
+              [_rootContainer addSubview:upButton];
+              [_rootContainer addSubview:leftButton];
+              [_rootContainer addSubview:downButton];
+              [_rootContainer addSubview:rightButton];
 
 
               CGFloat attack =
@@ -2202,25 +2296,11 @@ jobs:
                    block];
 
 
-              [_rootContainer
-               addSubview:
-               hpButton];
-
-              [_rootContainer
-               addSubview:
-               hkButton];
-
-              [_rootContainer
-               addSubview:
-               lpButton];
-
-              [_rootContainer
-               addSubview:
-               lkButton];
-
-              [_rootContainer
-               addSubview:
-               blockButton];
+              [_rootContainer addSubview:hpButton];
+              [_rootContainer addSubview:hkButton];
+              [_rootContainer addSubview:lpButton];
+              [_rootContainer addSubview:lkButton];
+              [_rootContainer addSubview:blockButton];
 
 
               if (run > 0)
@@ -2407,8 +2487,7 @@ jobs:
 
           text = text.replace(
               marker,
-              methods +
-              marker,
+              methods + marker,
               1
           )
 
@@ -2423,21 +2502,21 @@ jobs:
 
 
           replacement = (
-              r'\1\n'
-              r'\t[self mkInstallTouchControls];\n'
-              r'\t[self mkApplyCRT];'
+              r'\1'
+              '\n\t[self mkInstallTouchControls];'
+              '\n\t[self mkApplyCRT];'
           )
 
 
-          text, count =
-              layout_pattern.subn(
-                  replacement,
-                  text,
-                  count=1
-              )
+          text, count = layout_pattern.subn(
+              replacement,
+              text,
+              count=1
+          )
 
 
           if count != 1:
+
               raise SystemExit(
                   "ERROR: VIEW LAYOUT PATCH FAILED"
               )
@@ -2450,16 +2529,22 @@ jobs:
 
 
           if start_marker not in text:
+
               raise SystemExit(
                   "ERROR: EMULATOR START MARKER NOT FOUND"
               )
 
 
-          text = text.replace(
-              start_marker,
+          start_replacement = (
               start_marker +
               '\n\t[self mkInstallTouchControls];'
-              '\n\t[self mkApplyCRT];',
+              '\n\t[self mkApplyCRT];'
+          )
+
+
+          text = text.replace(
+              start_marker,
+              start_replacement,
               1
           )
 
@@ -2484,32 +2569,28 @@ jobs:
         run: |
           set -e
 
-          PLIST=$(
-            find dospad \
-              -type f \
-              -name "*Info.plist" \
-              | grep -E "iDOS|iDos|idos" \
-              | head -1
-          )
+          PLIST="dospad/Resources/iDOS-Info.plist"
 
-          if [ -z "$PLIST" ]; then
+          if [ ! -f "$PLIST" ]; then
+
             PLIST=$(
               find dospad \
                 -type f \
                 -name "*Info.plist" \
                 | head -1
             )
+
           fi
 
           echo "PLIST=$PLIST"
 
           if [ -z "$PLIST" ]; then
-            echo "ERROR: Info.plist not found"
-            exit 1
-          fi
 
-          echo "$PLIST" \
-            > output/source-plist.txt
+            echo "ERROR: INFO PLIST NOT FOUND"
+
+            exit 1
+
+          fi
 
           plutil \
             -replace CFBundleDisplayName \
@@ -2522,7 +2603,7 @@ jobs:
             "$PLIST" || true
 
       # ==========================================================
-      # ICON — FULL FIXED VERSION
+      # ICON — FIXED
       # ==========================================================
 
       - name: Generate MK Trilogy icon
@@ -2534,7 +2615,6 @@ jobs:
           import glob
           import json
           import os
-          import re
 
           icon_sets = glob.glob(
               "dospad/Resources/**/*.appiconset",
@@ -2552,62 +2632,108 @@ jobs:
                   "ERROR: APP ICON SET NOT FOUND"
               )
 
-          preferred = [
-              p for p in icon_sets
-              if os.path.basename(p).lower()
-              == "appicon.appiconset"
-          ]
-
-          if preferred:
-              appicon = preferred[0]
-          else:
-              appicon = icon_sets[0]
+          appicon = icon_sets[0]
 
           print(
-              "APPICON:",
+              "APP ICON SET:",
               appicon
           )
 
-          contents_path = os.path.join(
+          os.makedirs(
               appicon,
-              "Contents.json"
+              exist_ok=True
           )
 
-          if os.path.exists(contents_path):
-              with open(
-                  contents_path,
-                  "r",
-                  encoding="utf-8"
-              ) as file:
-                  contents = json.load(file)
-          else:
-              contents = {
-                  "images": [],
-                  "info": {
-                      "author": "xcode",
-                      "version": 1
-                  }
-              }
+          for old in glob.glob(
+              os.path.join(
+                  appicon,
+                  "*.png"
+              )
+          ):
+              os.remove(old)
+
+          entries = [
+              (
+                  "iphone",
+                  "20x20",
+                  "2x",
+                  40,
+                  "Icon20-2.png"
+              ),
+              (
+                  "iphone",
+                  "20x20",
+                  "3x",
+                  60,
+                  "Icon20-3.png"
+              ),
+              (
+                  "iphone",
+                  "29x29",
+                  "2x",
+                  58,
+                  "Icon29-2.png"
+              ),
+              (
+                  "iphone",
+                  "29x29",
+                  "3x",
+                  87,
+                  "Icon29-3.png"
+              ),
+              (
+                  "iphone",
+                  "40x40",
+                  "2x",
+                  80,
+                  "Icon40-2.png"
+              ),
+              (
+                  "iphone",
+                  "40x40",
+                  "3x",
+                  120,
+                  "Icon40-3.png"
+              ),
+              (
+                  "iphone",
+                  "60x60",
+                  "2x",
+                  120,
+                  "Icon60-2.png"
+              ),
+              (
+                  "iphone",
+                  "60x60",
+                  "3x",
+                  180,
+                  "Icon60-3.png"
+              ),
+              (
+                  "ios-marketing",
+                  "1024x1024",
+                  "1x",
+                  1024,
+                  "Icon1024.png"
+              ),
+          ]
 
           def get_font(size):
               paths = [
                   "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-                  "/System/Library/Fonts/Supplemental/Arial.ttf"
+                  "/System/Library/Fonts/Supplemental/Arial.ttf",
               ]
 
-              for path in paths:
-                  if os.path.exists(path):
+              for font_path in paths:
+                  if os.path.exists(font_path):
                       return ImageFont.truetype(
-                          path,
+                          font_path,
                           size
                       )
 
               return ImageFont.load_default()
 
-          def create_icon(
-              pixels,
-              output
-          ):
+          def make_icon(pixels, output):
               image = Image.new(
                   "RGB",
                   (
@@ -2673,8 +2799,7 @@ jobs:
                   )
 
               margin = int(
-                  pixels *
-                  0.10
+                  pixels * 0.10
               )
 
               draw.ellipse(
@@ -2697,8 +2822,31 @@ jobs:
                   width=max(
                       2,
                       int(
-                          pixels *
-                          0.025
+                          pixels * 0.025
+                      )
+                  )
+              )
+
+              inner = int(
+                  pixels * 0.17
+              )
+
+              draw.ellipse(
+                  (
+                      inner,
+                      inner,
+                      pixels - inner,
+                      pixels - inner
+                  ),
+                  outline=(
+                      110,
+                      16,
+                      16
+                  ),
+                  width=max(
+                      1,
+                      int(
+                          pixels * 0.010
                       )
                   )
               )
@@ -2707,8 +2855,7 @@ jobs:
                   max(
                       12,
                       int(
-                          pixels *
-                          0.31
+                          pixels * 0.31
                       )
                   )
               )
@@ -2758,8 +2905,7 @@ jobs:
                   max(
                       8,
                       int(
-                          pixels *
-                          0.073
+                          pixels * 0.073
                       )
                   )
               )
@@ -2786,8 +2932,7 @@ jobs:
                           pixels -
                           subtitle_width
                       ) / 2,
-                      pixels *
-                      0.69
+                      pixels * 0.69
                   ),
                   subtitle,
                   font=small,
@@ -2803,131 +2948,53 @@ jobs:
                   "PNG"
               )
 
-          images = contents.get(
-              "images",
-              []
-          )
+          images = []
 
-          if not images:
-              images = [
-                  {
-                      "idiom": "iphone",
-                      "size": "60x60",
-                      "scale": "2x",
-                      "filename": "MK-120.png"
-                  },
-                  {
-                      "idiom": "iphone",
-                      "size": "60x60",
-                      "scale": "3x",
-                      "filename": "MK-180.png"
-                  },
-                  {
-                      "idiom": "ios-marketing",
-                      "size": "1024x1024",
-                      "scale": "1x",
-                      "filename": "MK-1024.png"
-                  }
-              ]
-
-          fixed_images = []
-
-          index = 0
-
-          for entry in images:
-              size_text = entry.get(
-                  "size"
-              )
-
-              scale_text = entry.get(
-                  "scale"
-              )
-
-              if not size_text or not scale_text:
-                  fixed_images.append(
-                      entry
-                  )
-                  continue
-
-              match_size = re.match(
-                  r"([0-9.]+)x",
-                  size_text
-              )
-
-              match_scale = re.match(
-                  r"([0-9.]+)x",
-                  scale_text
-              )
-
-              if not match_size or not match_scale:
-                  fixed_images.append(
-                      entry
-                  )
-                  continue
-
-              points = float(
-                  match_size.group(1)
-              )
-
-              scale = float(
-                  match_scale.group(1)
-              )
-
-              pixels = int(
-                  round(
-                      points *
-                      scale
-                  )
-              )
-
-              if pixels <= 0:
-                  fixed_images.append(
-                      entry
-                  )
-                  continue
-
-              index += 1
-
-              filename = (
-                  f"MKIcon-{index}-{pixels}.png"
-              )
+          for (
+              idiom,
+              size,
+              scale,
+              pixels,
+              filename
+          ) in entries:
 
               output = os.path.join(
                   appicon,
                   filename
               )
 
-              create_icon(
-                  pixels,
-                  output
-              )
-
-              new_entry = dict(
-                  entry
-              )
-
-              new_entry["filename"] = (
-                  filename
-              )
-
-              fixed_images.append(
-                  new_entry
-              )
-
               print(
-                  "CREATED:",
+                  "CREATING:",
                   filename,
                   pixels
               )
 
-          contents["images"] = (
-              fixed_images
-          )
+              make_icon(
+                  pixels,
+                  output
+              )
 
-          contents["info"] = {
-              "author": "xcode",
-              "version": 1
+              images.append(
+                  {
+                      "idiom": idiom,
+                      "size": size,
+                      "scale": scale,
+                      "filename": filename
+                  }
+              )
+
+          contents = {
+              "images": images,
+              "info": {
+                  "author": "xcode",
+                  "version": 1
+              }
           }
+
+          contents_path = os.path.join(
+              appicon,
+              "Contents.json"
+          )
 
           with open(
               contents_path,
@@ -2944,32 +3011,34 @@ jobs:
           print(
               "===== ICON SUCCESS ====="
           )
-
           print(
               contents_path
           )
           PY
 
       # ==========================================================
-      # VERIFY
+      # VERIFY PATCHES
       # ==========================================================
 
       - name: Verify MK patches
         run: |
           set -e
 
+          echo
           echo "===== AUTOBOOT ====="
 
           grep -n \
             "MKTRILOGY_AUTOBOOT" \
             dospad/dospad/Main/DOSPadEmulator.m
 
-          echo "===== MENU ====="
+          echo
+          echo "===== MAIN MENU ====="
 
           grep -n \
             "MKTRILOGY_MAIN_MENU" \
             dospad/dospad/Main/DPAppDelegate.m
 
+          echo
           echo "===== TOUCH ====="
 
           grep -n \
@@ -3026,19 +3095,21 @@ jobs:
           fi
 
       # ==========================================================
-      # FIND APP
+      # LOCATE APP
       # ==========================================================
 
       - name: Locate built app
         run: |
           set -e
 
+          echo
           echo "===== BUILT APPS ====="
 
           find build \
             -type d \
             -name "*.app" \
             -print
+
 
           APP=$(
             find build/Build/Products \
@@ -3047,27 +3118,36 @@ jobs:
               | head -1
           )
 
+
           if [ -z "$APP" ]; then
+
             APP=$(
               find build/Build/Products \
                 -type d \
                 -name "*.app" \
                 | head -1
             )
+
           fi
 
+
           if [ -z "$APP" ]; then
+
             echo "ERROR: APP NOT FOUND"
+
             exit 1
+
           fi
+
 
           echo "$APP" \
             > output/app-path.txt
 
+
           echo "APP=$APP"
 
       # ==========================================================
-      # PUT REAL GAMES INSIDE APP
+      # BUNDLE REAL GAMES
       # ==========================================================
 
       - name: Put real MK1 MK2 MK3 inside app
@@ -3090,28 +3170,36 @@ jobs:
           mkdir -p \
             "$APP/MKGames/mk3"
 
+
           cp -R \
             games/mk1/. \
             "$APP/MKGames/mk1/"
+
 
           cp -R \
             games/mk2/. \
             "$APP/MKGames/mk2/"
 
+
           cp -R \
             games/mk3/. \
             "$APP/MKGames/mk3/"
 
-          echo "===== EXES INSIDE APP ====="
+
+          echo
+          echo "===== REAL EXES INSIDE APP ====="
 
           find "$APP/MKGames" \
             -type f \
             \( \
               -iname "MK1.EXE" \
-              -o -iname "MK2.EXE" \
-              -o -iname "MK3.EXE" \
+              -o \
+              -iname "MK2.EXE" \
+              -o \
+              -iname "MK3.EXE" \
             \) \
             -print
+
 
           test -n "$(
             find "$APP/MKGames/mk1" \
@@ -3121,6 +3209,7 @@ jobs:
               | head -1
           )"
 
+
           test -n "$(
             find "$APP/MKGames/mk2" \
               -maxdepth 1 \
@@ -3128,6 +3217,7 @@ jobs:
               -iname "MK2.EXE" \
               | head -1
           )"
+
 
           test -n "$(
             find "$APP/MKGames/mk3" \
@@ -3137,12 +3227,14 @@ jobs:
               | head -1
           )"
 
-          echo "MK1=$(find "$APP/MKGames/mk1" -type f | wc -l)"
-          echo "MK2=$(find "$APP/MKGames/mk2" -type f | wc -l)"
-          echo "MK3=$(find "$APP/MKGames/mk3" -type f | wc -l)"
+
+          echo
+          echo "MK1: $(find "$APP/MKGames/mk1" -type f | wc -l)"
+          echo "MK2: $(find "$APP/MKGames/mk2" -type f | wc -l)"
+          echo "MK3: $(find "$APP/MKGames/mk3" -type f | wc -l)"
 
       # ==========================================================
-      # FINAL PLIST
+      # FINAL INFO
       # ==========================================================
 
       - name: Finalize Info plist
@@ -3155,16 +3247,40 @@ jobs:
 
           PLIST="$APP/Info.plist"
 
+
           plutil \
             -replace CFBundleDisplayName \
             -string "MK Remastered Trilogy" \
             "$PLIST"
+
 
           plutil \
             -replace CFBundleIdentifier \
             -string "com.mkremastered.trilogy" \
             "$PLIST"
 
+
+          /usr/libexec/PlistBuddy \
+            -c "Delete :UISupportedInterfaceOrientations" \
+            "$PLIST" || true
+
+
+          /usr/libexec/PlistBuddy \
+            -c "Add :UISupportedInterfaceOrientations array" \
+            "$PLIST"
+
+
+          /usr/libexec/PlistBuddy \
+            -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationLandscapeLeft" \
+            "$PLIST"
+
+
+          /usr/libexec/PlistBuddy \
+            -c "Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationLandscapeRight" \
+            "$PLIST"
+
+
+          echo
           echo "===== FINAL INFO ====="
 
           plutil -p "$PLIST" \
@@ -3182,42 +3298,60 @@ jobs:
             cat output/app-path.txt
           )
 
+
           {
             echo "========================================"
             echo "MORTAL KOMBAT REMASTERED TRILOGY"
             echo "========================================"
             echo
-            echo "BUILD: REAL CLASSIC TRILOGY"
+            echo "REAL CLASSIC TRILOGY BUILD"
             echo
             echo "FEATURES:"
+            echo
             echo "- REAL MK1.EXE"
             echo "- REAL MK2.EXE"
             echo "- REAL MK3.EXE"
-            echo "- NATIVE TRILOGY MENU"
-            echo "- CUSTOM APP ICON"
+            echo "- TRILOGY MAIN MENU"
+            echo "- MK ICON"
             echo "- TOUCH D-PAD"
-            echo "- HP / LP / HK / LK"
+            echo "- HP"
+            echo "- LP"
+            echo "- HK"
+            echo "- LK"
             echo "- BLOCK"
             echo "- MK3 RUN"
             echo "- START"
-            echo "- PAUSE MENU"
+            echo "- PAUSE"
             echo "- SEND ESC"
-            echo "- CLASSIC MODE"
-            echo "- CRT+ SCANLINES"
+            echo "- CLASSIC"
+            echo "- CRT+"
             echo "- FX BUTTON"
             echo
-            echo "FILES:"
-            echo "MK1=$(find "$APP/MKGames/mk1" -type f | wc -l)"
-            echo "MK2=$(find "$APP/MKGames/mk2" -type f | wc -l)"
-            echo "MK3=$(find "$APP/MKGames/mk3" -type f | wc -l)"
-          } \
-            > output/BUILD-INFO.txt
+            echo "MK1 FILES=$(
+              find "$APP/MKGames/mk1" \
+                -type f \
+                | wc -l
+            )"
+            echo
+            echo "MK2 FILES=$(
+              find "$APP/MKGames/mk2" \
+                -type f \
+                | wc -l
+            )"
+            echo
+            echo "MK3 FILES=$(
+              find "$APP/MKGames/mk3" \
+                -type f \
+                | wc -l
+            )"
+          } > output/BUILD-INFO.txt
+
 
           cat \
             output/BUILD-INFO.txt
 
       # ==========================================================
-      # IPA
+      # CREATE IPA
       # ==========================================================
 
       - name: Create IPA
@@ -3228,13 +3362,16 @@ jobs:
             cat output/app-path.txt
           )
 
+
           rm -rf Payload
 
           mkdir -p Payload
 
+
           cp -R \
             "$APP" \
             Payload/
+
 
           ditto \
             -c \
@@ -3243,6 +3380,7 @@ jobs:
             --keepParent \
             Payload \
             output/MK-Remastered-Trilogy-REAL.ipa
+
 
           echo
           echo "===== FINAL IPA ====="
