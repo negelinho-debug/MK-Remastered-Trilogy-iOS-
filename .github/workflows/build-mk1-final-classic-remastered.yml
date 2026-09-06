@@ -1,0 +1,1294 @@
+name: Build FINAL MK1 Classic + Remastered
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -e
+          brew install innoextract p7zip
+          python3 -m pip install --break-system-packages pillow || python3 -m pip install --user pillow
+          xcodebuild -version
+
+      - name: Prepare folders
+        run: |
+          set -e
+          rm -rf raw-installers installers release-files extracted game dospad icon-tools build Payload output
+          mkdir -p raw-installers installers release-files extracted game output
+
+      - name: Collect installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          INDEX=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            INDEX=$((INDEX + 1))
+            cp "$FILE" "raw-installers/repo_${INDEX}.exe"
+          done < <(
+            find . \
+              -type f \
+              -iname "*.exe" \
+              -not -path "./.git/*" \
+              -not -path "./raw-installers/*" \
+              -not -path "./installers/*" \
+              -not -path "./release-files/*" \
+              -not -path "./extracted/*" \
+              -not -path "./game/*" \
+              -not -path "./dospad/*" \
+              -not -path "./icon-tools/*" \
+              -not -path "./build/*" \
+              -not -path "./Payload/*" \
+              -not -path "./output/*" \
+              | sort
+          )
+
+          set +e
+          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
+          if [ -n "$TAG" ]; then
+            gh release download "$TAG" --dir release-files --pattern "*.exe"
+          fi
+          set -e
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            INDEX=$((INDEX + 1))
+            cp "$FILE" "raw-installers/release_${INDEX}.exe"
+          done < <(
+            find release-files -type f -iname "*.exe" | sort
+          )
+
+          ls -lh raw-installers || true
+
+      - name: Deduplicate installers
+        run: |
+          set -e
+          FOUND=0
+
+          for FILE in raw-installers/*.exe; do
+            [ -f "$FILE" ] || continue
+            FOUND=1
+            HASH=$(shasum -a 256 "$FILE" | awk '{print $1}')
+            [ -f "installers/${HASH}.exe" ] || cp "$FILE" "installers/${HASH}.exe"
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: NO INSTALLERS FOUND"
+            exit 1
+          fi
+
+      - name: Extract installers
+        run: |
+          set -e
+          INDEX=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+            INDEX=$((INDEX + 1))
+            DEST="extracted/pkg${INDEX}"
+            mkdir -p "$DEST"
+
+            set +e
+            innoextract --extract --output-dir "$DEST" "$FILE"
+            STATUS=$?
+            if [ "$STATUS" -ne 0 ]; then
+              7z x "$FILE" "-o$DEST" -y
+            fi
+            set -e
+          done < <(
+            find installers -type f -iname "*.exe" | sort
+          )
+
+          find extracted -type f -iname "MK1.EXE" -print || true
+
+      - name: Normalize complete MK1
+        run: |
+          set -e
+
+          MK1_EXE=$(
+            find extracted \
+              -type f \
+              -iname "MK1.EXE" \
+              -not -path "*/__support/*" \
+              | head -1
+          )
+
+          if [ -z "$MK1_EXE" ]; then
+            echo "ERROR: REAL MK1.EXE NOT FOUND"
+            exit 1
+          fi
+
+          MK1_DIR="$(dirname "$MK1_EXE")"
+
+          rm -rf game/MK1
+          mkdir -p game/MK1
+          cp -R "$MK1_DIR"/. game/MK1/
+
+          test -f game/MK1/MK1.EXE
+          test -f game/MK1/GRAPHICS/NINJA.GRA
+
+          echo "MK1 FILES=$(find game/MK1 -type f | wc -l | tr -d ' ')"
+          echo "GRA FILES=$(find game/MK1 -type f -iname '*.GRA' | wc -l | tr -d ' ')"
+
+      - name: Clone iDOS
+        run: |
+          set -e
+          git clone --depth 1 https://github.com/litchie/dospad.git dospad
+          xcodebuild -project dospad/dospad.xcodeproj -list
+
+      - name: Create Classic and Remastered configs
+        run: |
+          set -e
+          BASE="dospad/Resources/configs/dospad.cfg"
+          test -f "$BASE"
+
+          cp "$BASE" game/MK1/CLASSIC.CFG
+          cp "$BASE" game/MK1/REMASTER.CFG
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          def set_option(text, section, key, value):
+              pattern = rf"(?m)^{re.escape(key)}\s*=.*$"
+              if re.search(pattern, text):
+                  return re.sub(pattern, f"{key}={value}", text)
+              marker = f"[{section}]"
+              if marker in text:
+                  return text.replace(marker, marker + f"\n{key}={value}", 1)
+              return text + f"\n[{section}]\n{key}={value}\n"
+
+          configs = {
+              "game/MK1/CLASSIC.CFG": {
+                  ("render", "frameskip"): "0",
+                  ("render", "aspect"): "true",
+                  ("render", "scaler"): "normal2x",
+                  ("cpu", "core"): "dynamic",
+                  ("cpu", "cycles"): "max",
+              },
+              "game/MK1/REMASTER.CFG": {
+                  ("render", "frameskip"): "0",
+                  ("render", "aspect"): "true",
+                  ("render", "scaler"): "hq2x",
+                  ("cpu", "core"): "dynamic",
+                  ("cpu", "cycles"): "max",
+              },
+          }
+
+          for filename, options in configs.items():
+              p = Path(filename)
+              text = p.read_text(errors="ignore")
+              for (section, key), value in options.items():
+                  text = set_option(text, section, key, value)
+              p.write_text(text)
+
+          print("CONFIGS READY")
+          PY
+
+          cp game/MK1/CLASSIC.CFG game/MK1/dospad.cfg
+
+      - name: Create MK1 autoboot
+        run: |
+          set -e
+          cat > game/MK1/MKAUTO.TXT <<'EOF'
+          C:
+          CD \
+          MK1.EXE
+          EOF
+
+      - name: Patch final MK1 app
+        run: |
+          set -e
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          # ------------------------------------------------------
+          # 1) AUTOBOOT
+          # ------------------------------------------------------
+
+          emu = Path("dospad/dospad/Main/DOSPadEmulator.m")
+          text = emu.read_text(encoding="utf-8")
+
+          if "MKFINAL_AUTOBOOT" not in text:
+              marker = '[self.commandList addObject:@"REM END AUTOMOUNT"];'
+              if marker not in text:
+                  raise SystemExit("ERROR: AUTOBOOT MARKER NOT FOUND")
+
+              patch = marker + r'''
+
+              // MKFINAL_AUTOBOOT
+              NSString *mkBootPath =
+                  [self.workingDirectory.path
+                   stringByAppendingPathComponent:@"MKAUTO.TXT"];
+
+              if ([[NSFileManager defaultManager] fileExistsAtPath:mkBootPath])
+              {
+                  NSString *mkText =
+                      [NSString stringWithContentsOfFile:mkBootPath
+                                                encoding:NSUTF8StringEncoding
+                                                   error:nil];
+
+                  for (NSString *raw in
+                       [mkText componentsSeparatedByCharactersInSet:
+                        [NSCharacterSet newlineCharacterSet]])
+                  {
+                      NSString *line =
+                          [raw stringByTrimmingCharactersInSet:
+                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
+
+                      if (line.length > 0)
+                          [self.commandList addObject:line];
+                  }
+              }
+              // END MKFINAL_AUTOBOOT
+              '''
+
+              text = text.replace(marker, patch, 1)
+              emu.write_text(text, encoding="utf-8")
+
+          # ------------------------------------------------------
+          # 2) MAIN MENU
+          # ------------------------------------------------------
+
+          delegate = Path("dospad/dospad/Main/DPAppDelegate.m")
+          text = delegate.read_text(encoding="utf-8")
+
+          if "MKFINAL_MENU" not in text:
+              import_marker = '#import <AVFoundation/AVFoundation.h>'
+              if import_marker not in text:
+                  raise SystemExit("ERROR: APP DELEGATE IMPORT MARKER NOT FOUND")
+
+              menu = r'''
+
+          // ======================================================
+          // MKFINAL_MENU
+          // ======================================================
+
+          @interface DPAppDelegate (MKFinal)
+          - (void)mkFinalShowMenu;
+          - (void)mkFinalLaunchMode:(NSString *)mode;
+          @end
+
+          @interface MKFinalMenuController : UIViewController
+          @property(nonatomic, weak) DPAppDelegate *owner;
+          @property(nonatomic, strong) UIButton *classicButton;
+          @property(nonatomic, strong) UIButton *remasteredButton;
+          @property(nonatomic, strong) UILabel *statusLabel;
+          @end
+
+          @implementation MKFinalMenuController
+
+          - (UIButton *)mkButton:(NSString *)title
+          {
+              UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+              [b setTitle:title forState:UIControlStateNormal];
+              [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+              b.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBlack];
+              b.backgroundColor = [UIColor colorWithRed:0.31 green:0.015 blue:0.02 alpha:1.0];
+              b.layer.cornerRadius = 14;
+              b.layer.borderWidth = 1;
+              b.layer.borderColor = [UIColor colorWithRed:0.95 green:0.15 blue:0.10 alpha:0.55].CGColor;
+              return b;
+          }
+
+          - (void)viewDidLoad
+          {
+              [super viewDidLoad];
+
+              self.view.backgroundColor =
+                  [UIColor colorWithRed:0.012 green:0.006 blue:0.008 alpha:1.0];
+
+              UIView *glow = [[UIView alloc] init];
+              glow.tag = 7000;
+              glow.backgroundColor =
+                  [UIColor colorWithRed:0.20 green:0.005 blue:0.008 alpha:0.55];
+              glow.userInteractionEnabled = NO;
+              [self.view addSubview:glow];
+
+              UILabel *title = [[UILabel alloc] init];
+              title.tag = 7001;
+              title.text = @"MORTAL KOMBAT";
+              title.textAlignment = NSTextAlignmentCenter;
+              title.textColor = UIColor.whiteColor;
+              title.font = [UIFont systemFontOfSize:42 weight:UIFontWeightBlack];
+              [self.view addSubview:title];
+
+              UILabel *sub = [[UILabel alloc] init];
+              sub.tag = 7002;
+              sub.text = @"COMPLETE MK1";
+              sub.textAlignment = NSTextAlignmentCenter;
+              sub.textColor = [UIColor colorWithRed:1 green:0.24 blue:0.16 alpha:1];
+              sub.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
+              [self.view addSubview:sub];
+
+              UILabel *choose = [[UILabel alloc] init];
+              choose.tag = 7003;
+              choose.text = @"CHOOSE MODE";
+              choose.textAlignment = NSTextAlignmentCenter;
+              choose.textColor = [UIColor colorWithWhite:0.72 alpha:1];
+              choose.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
+              [self.view addSubview:choose];
+
+              self.classicButton = [self mkButton:@"CLASSIC"];
+              self.classicButton.tag = 1;
+              [self.classicButton addTarget:self
+                                     action:@selector(modePressed:)
+                           forControlEvents:UIControlEventTouchUpInside];
+              [self.view addSubview:self.classicButton];
+
+              self.remasteredButton = [self mkButton:@"REMASTERED"];
+              self.remasteredButton.tag = 2;
+              [self.remasteredButton addTarget:self
+                                        action:@selector(modePressed:)
+                              forControlEvents:UIControlEventTouchUpInside];
+              [self.view addSubview:self.remasteredButton];
+
+              self.statusLabel = [[UILabel alloc] init];
+              self.statusLabel.text = @"ORIGINAL MK1 ENGINE • FULL GAME • FPS";
+              self.statusLabel.textAlignment = NSTextAlignmentCenter;
+              self.statusLabel.textColor = [UIColor colorWithWhite:0.48 alpha:1];
+              self.statusLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
+              [self.view addSubview:self.statusLabel];
+          }
+
+          - (void)modePressed:(UIButton *)sender
+          {
+              self.classicButton.enabled = NO;
+              self.remasteredButton.enabled = NO;
+
+              NSString *mode = sender.tag == 2 ? @"REMASTERED" : @"CLASSIC";
+              self.statusLabel.text = @"LOADING COMPLETE MK1...";
+              [self.owner mkFinalLaunchMode:mode];
+          }
+
+          - (void)viewDidLayoutSubviews
+          {
+              [super viewDidLayoutSubviews];
+
+              CGFloat w = CGRectGetWidth(self.view.bounds);
+              CGFloat h = CGRectGetHeight(self.view.bounds);
+
+              [self.view viewWithTag:7000].frame = CGRectMake(0, 0, w, h * 0.42);
+              [self.view viewWithTag:7001].frame = CGRectMake(0, h * 0.14, w, 54);
+              [self.view viewWithTag:7002].frame = CGRectMake(0, h * 0.14 + 52, w, 28);
+              [self.view viewWithTag:7003].frame = CGRectMake(0, h * 0.14 + 90, w, 22);
+
+              CGFloat bw = MIN(380, w - 90);
+              CGFloat x = (w - bw) / 2.0;
+              CGFloat y = h * 0.48;
+
+              self.classicButton.frame = CGRectMake(x, y, bw, 58);
+              self.remasteredButton.frame = CGRectMake(x, y + 72, bw, 58);
+              self.statusLabel.frame = CGRectMake(0, h - 38, w, 18);
+          }
+
+          - (BOOL)prefersStatusBarHidden { return YES; }
+
+          - (UIInterfaceOrientationMask)supportedInterfaceOrientations
+          {
+              return UIInterfaceOrientationMaskLandscape;
+          }
+
+          @end
+
+          // END MKFINAL_MENU
+              '''
+
+              text = text.replace(import_marker, import_marker + "\n" + menu, 1)
+
+              old_start = (
+                  '[self performSelector:@selector(startDOS) '
+                  'withObject:nil afterDelay:1];'
+              )
+              new_start = (
+                  '[self performSelector:@selector(mkFinalShowMenu) '
+                  'withObject:nil afterDelay:0.20];'
+              )
+
+              if old_start not in text:
+                  raise SystemExit("ERROR: STARTDOS MARKER NOT FOUND")
+
+              text = text.replace(old_start, new_start, 1)
+
+              method_marker = '-(void)setWindowTitle:(char *)title'
+              if method_marker not in text:
+                  raise SystemExit("ERROR: APP DELEGATE METHOD MARKER NOT FOUND")
+
+              methods = r'''
+
+          // ======================================================
+          // MK FINAL LAUNCH
+          // ======================================================
+
+          - (void)mkFinalShowMenu
+          {
+              if ([DOSPadEmulator sharedInstance].started)
+                  return;
+
+              MKFinalMenuController *menu = [[MKFinalMenuController alloc] init];
+              menu.owner = self;
+              menu.modalPresentationStyle = UIModalPresentationFullScreen;
+
+              [self.emulatorController presentViewController:menu
+                                                    animated:NO
+                                                  completion:nil];
+          }
+
+          - (void)mkFinalLaunchMode:(NSString *)mode
+          {
+              NSFileManager *fm = [NSFileManager defaultManager];
+
+              NSString *bundleGame =
+                  [[NSBundle.mainBundle bundlePath]
+                   stringByAppendingPathComponent:@"MKGame"];
+
+              NSString *documents =
+                  [NSSearchPathForDirectoriesInDomains(
+                      NSDocumentDirectory,
+                      NSUserDomainMask,
+                      YES
+                   ) lastObject];
+
+              NSString *destination =
+                  [documents stringByAppendingPathComponent:@"MK1Final"];
+
+              [fm removeItemAtPath:destination error:nil];
+
+              NSError *copyError = nil;
+              if (![fm copyItemAtPath:bundleGame
+                               toPath:destination
+                                error:&copyError])
+              {
+                  NSLog(@"MK COPY ERROR: %@", copyError);
+                  return;
+              }
+
+              NSString *configName =
+                  [mode isEqualToString:@"REMASTERED"]
+                  ? @"REMASTER.CFG"
+                  : @"CLASSIC.CFG";
+
+              NSString *sourceConfig =
+                  [destination stringByAppendingPathComponent:configName];
+
+              NSString *activeConfig =
+                  [destination stringByAppendingPathComponent:@"dospad.cfg"];
+
+              [fm removeItemAtPath:activeConfig error:nil];
+
+              NSError *configError = nil;
+              [fm copyItemAtPath:sourceConfig
+                          toPath:activeConfig
+                           error:&configError];
+
+              if (configError)
+                  NSLog(@"MK CONFIG ERROR: %@", configError);
+
+              [NSUserDefaults.standardUserDefaults
+               setObject:mode
+               forKey:@"MKRenderMode"];
+              [NSUserDefaults.standardUserDefaults synchronize];
+
+              [DOSPadEmulator sharedInstance].workingDirectory =
+                  [NSURL fileURLWithPath:destination isDirectory:YES];
+
+              UIViewController *menu =
+                  self.emulatorController.presentedViewController;
+
+              [menu dismissViewControllerAnimated:NO
+                                       completion:^{
+                  [self startDOS];
+              }];
+          }
+
+          // END MK FINAL LAUNCH
+              '''
+
+              text = text.replace(method_marker, methods + method_marker, 1)
+              delegate.write_text(text, encoding="utf-8")
+
+          # ------------------------------------------------------
+          # 3) CLEAN GAME VIEW + TOUCH + FPS
+          # ------------------------------------------------------
+
+          vc = Path("dospad/dospad/Main/DPEmulatorViewController.m")
+          text = vc.read_text(encoding="utf-8")
+
+          if '#import <QuartzCore/QuartzCore.h>' not in text:
+              marker = '#import <UIKit/UIKit.h>'
+              if marker not in text:
+                  raise SystemExit("ERROR: UIKIT IMPORT NOT FOUND")
+              text = text.replace(
+                  marker,
+                  marker + '\n#import <QuartzCore/QuartzCore.h>',
+                  1
+              )
+
+          if "_mkFPSLink" not in text:
+              ivar_marker = "    PianoKeyboard *piano;\n}"
+              if ivar_marker not in text:
+                  raise SystemExit("ERROR: FPS IVAR MARKER NOT FOUND")
+
+              ivars = (
+                  "    PianoKeyboard *piano;\n"
+                  "    CADisplayLink *_mkFPSLink;\n"
+                  "    UILabel *_mkFPSLabel;\n"
+                  "    CFTimeInterval _mkFPSLastTime;\n"
+                  "    NSInteger _mkFPSFrames;\n"
+                  "}"
+              )
+
+              text = text.replace(ivar_marker, ivars, 1)
+
+          if "MKFINAL_GAME_UI" not in text:
+              marker = '// MARK: DPGamepadDelegate'
+              if marker not in text:
+                  raise SystemExit("ERROR: GAMEPAD MARKER NOT FOUND")
+
+              methods = r'''
+
+          // ======================================================
+          // MKFINAL_GAME_UI
+          // ======================================================
+
+          - (BOOL)mkFinalIsOverlay:(UIView *)view
+          {
+              if ([view.accessibilityIdentifier isEqualToString:@"MK_FINAL_CONTROL"])
+                  return YES;
+              if (view == _mkFPSLabel)
+                  return YES;
+              if (view.tag == 9902)
+                  return YES;
+              return NO;
+          }
+
+          - (void)mkFinalApplyLayout
+          {
+              if (!_rootContainer || !self.screenView)
+                  return;
+
+              _rootContainer.frame = self.view.bounds;
+              _rootContainer.autoresizingMask =
+                  UIViewAutoresizingFlexibleWidth |
+                  UIViewAutoresizingFlexibleHeight;
+              _rootContainer.backgroundColor = UIColor.blackColor;
+
+              for (UIView *view in _rootContainer.subviews)
+              {
+                  if (view == self.screenView || [self mkFinalIsOverlay:view])
+                  {
+                      view.hidden = NO;
+                  }
+                  else
+                  {
+                      view.hidden = YES;
+                      view.userInteractionEnabled = NO;
+                  }
+              }
+
+              CGFloat w = CGRectGetWidth(_rootContainer.bounds);
+              CGFloat h = CGRectGetHeight(_rootContainer.bounds);
+
+              // Preserve the original DOS 320x200-ish shape.
+              CGFloat aspect = 1.60;
+              CGFloat gh = h;
+              CGFloat gw = gh * aspect;
+
+              if (gw > w)
+              {
+                  gw = w;
+                  gh = gw / aspect;
+              }
+
+              self.screenView.frame =
+                  CGRectMake(
+                      (w - gw) / 2.0,
+                      (h - gh) / 2.0,
+                      gw,
+                      gh
+                  );
+
+              NSString *mode =
+                  [NSUserDefaults.standardUserDefaults
+                   stringForKey:@"MKRenderMode"];
+
+              BOOL remastered =
+                  [mode isEqualToString:@"REMASTERED"];
+
+              self.screenView.layer.magnificationFilter =
+                  remastered ? kCAFilterLinear : kCAFilterNearest;
+
+              self.screenView.layer.minificationFilter =
+                  remastered ? kCAFilterLinear : kCAFilterNearest;
+
+              self.screenView.layer.contentsScale =
+                  UIScreen.mainScreen.scale;
+
+              if (_mkFPSLabel)
+              {
+                  _mkFPSLabel.frame = CGRectMake(w - 82, 8, 70, 28);
+                  [_rootContainer bringSubviewToFront:_mkFPSLabel];
+              }
+
+              UIView *modeLabel = [_rootContainer viewWithTag:9902];
+              if (modeLabel)
+              {
+                  modeLabel.frame = CGRectMake(w / 2.0 - 64, 8, 128, 28);
+                  [_rootContainer bringSubviewToFront:modeLabel];
+              }
+
+              for (UIView *view in _rootContainer.subviews)
+              {
+                  if ([view.accessibilityIdentifier isEqualToString:@"MK_FINAL_CONTROL"])
+                      [_rootContainer bringSubviewToFront:view];
+              }
+          }
+
+          - (void)viewDidLayoutSubviews
+          {
+              [super viewDidLayoutSubviews];
+              [self mkFinalApplyLayout];
+          }
+
+          - (UIButton *)mkFinalButton:(NSString *)title
+                               frame:(CGRect)frame
+                                 key:(NSInteger)key
+          {
+              UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+              b.frame = frame;
+              b.tag = key;
+              b.accessibilityIdentifier = @"MK_FINAL_CONTROL";
+
+              [b setTitle:title forState:UIControlStateNormal];
+              [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+
+              b.titleLabel.font =
+                  [UIFont systemFontOfSize:13 weight:UIFontWeightBlack];
+
+              b.backgroundColor =
+                  [UIColor colorWithWhite:0.0 alpha:0.34];
+
+              b.layer.cornerRadius = 13;
+              b.layer.borderWidth = 1;
+              b.layer.borderColor =
+                  [UIColor colorWithWhite:1 alpha:0.24].CGColor;
+
+              [b addTarget:self
+                    action:@selector(mkFinalKeyDown:)
+          forControlEvents:UIControlEventTouchDown];
+
+              [b addTarget:self
+                    action:@selector(mkFinalKeyUp:)
+          forControlEvents:UIControlEventTouchUpInside];
+
+              [b addTarget:self
+                    action:@selector(mkFinalKeyUp:)
+          forControlEvents:UIControlEventTouchUpOutside];
+
+              [b addTarget:self
+                    action:@selector(mkFinalKeyUp:)
+          forControlEvents:UIControlEventTouchCancel];
+
+              return b;
+          }
+
+          - (void)mkFinalKeyDown:(UIButton *)button
+          {
+              [[DOSPadEmulator sharedInstance]
+               sendKey:(int)button.tag
+               pressed:YES];
+          }
+
+          - (void)mkFinalKeyUp:(UIButton *)button
+          {
+              [[DOSPadEmulator sharedInstance]
+               sendKey:(int)button.tag
+               pressed:NO];
+          }
+
+          - (void)mkFinalRemoveControls
+          {
+              for (UIView *view in [_rootContainer.subviews copy])
+              {
+                  if ([view.accessibilityIdentifier isEqualToString:@"MK_FINAL_CONTROL"]
+                      || view.tag == 9902)
+                  {
+                      [view removeFromSuperview];
+                  }
+              }
+          }
+
+          - (void)mkFinalInstallControls
+          {
+              if (!_rootContainer)
+                  return;
+
+              [self mkFinalRemoveControls];
+
+              CGFloat w = CGRectGetWidth(_rootContainer.bounds);
+              CGFloat h = CGRectGetHeight(_rootContainer.bounds);
+
+              CGFloat d = 48;
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"▲"
+                             frame:CGRectMake(62, h - 150, d, d)
+                               key:22]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"◀"
+                             frame:CGRectMake(12, h - 99, d, d)
+                               key:29]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"▼"
+                             frame:CGRectMake(62, h - 99, d, d)
+                               key:27]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"▶"
+                             frame:CGRectMake(112, h - 99, d, d)
+                               key:6]];
+
+              CGFloat a = 46;
+              CGFloat ax = w - 164;
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"HP"
+                             frame:CGRectMake(ax, h - 150, a, a)
+                               key:24]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"HK"
+                             frame:CGRectMake(ax + 50, h - 150, a, a)
+                               key:12]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"LP"
+                             frame:CGRectMake(ax, h - 99, a, a)
+                               key:17]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"LK"
+                             frame:CGRectMake(ax + 50, h - 99, a, a)
+                               key:16]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"BLK"
+                             frame:CGRectMake(ax + 100, h - 125, a, a)
+                               key:13]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"START"
+                             frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32)
+                               key:58]];
+
+              [_rootContainer addSubview:
+               [self mkFinalButton:@"ESC"
+                             frame:CGRectMake(8, 8, 50, 30)
+                               key:41]];
+
+              UILabel *mode = [[UILabel alloc] init];
+              mode.tag = 9902;
+              mode.text =
+                  [NSUserDefaults.standardUserDefaults stringForKey:@"MKRenderMode"]
+                  ?: @"CLASSIC";
+              mode.textAlignment = NSTextAlignmentCenter;
+              mode.textColor = UIColor.whiteColor;
+              mode.font =
+                  [UIFont systemFontOfSize:10 weight:UIFontWeightBlack];
+              mode.backgroundColor =
+                  [UIColor colorWithWhite:0 alpha:0.34];
+              mode.layer.cornerRadius = 9;
+              mode.clipsToBounds = YES;
+              mode.userInteractionEnabled = NO;
+              [_rootContainer addSubview:mode];
+
+              [self mkFinalStartFPS];
+              [self mkFinalApplyLayout];
+          }
+
+          - (void)mkFinalStartFPS
+          {
+              if (!_mkFPSLabel)
+              {
+                  _mkFPSLabel = [[UILabel alloc] init];
+                  _mkFPSLabel.text = @"FPS --";
+                  _mkFPSLabel.textAlignment = NSTextAlignmentCenter;
+                  _mkFPSLabel.textColor =
+                      [UIColor colorWithRed:0.45 green:1 blue:0.42 alpha:1];
+                  _mkFPSLabel.font =
+                      [UIFont monospacedDigitSystemFontOfSize:11
+                                                       weight:UIFontWeightBlack];
+                  _mkFPSLabel.backgroundColor =
+                      [UIColor colorWithWhite:0 alpha:0.42];
+                  _mkFPSLabel.layer.cornerRadius = 9;
+                  _mkFPSLabel.clipsToBounds = YES;
+                  _mkFPSLabel.userInteractionEnabled = NO;
+              }
+
+              if (_mkFPSLabel.superview != _rootContainer)
+              {
+                  [_mkFPSLabel removeFromSuperview];
+                  [_rootContainer addSubview:_mkFPSLabel];
+              }
+
+              if (!_mkFPSLink)
+              {
+                  _mkFPSFrames = 0;
+                  _mkFPSLastTime = 0;
+
+                  _mkFPSLink =
+                      [CADisplayLink
+                       displayLinkWithTarget:self
+                       selector:@selector(mkFinalFPSTick:)];
+
+                  [_mkFPSLink addToRunLoop:NSRunLoop.mainRunLoop
+                                  forMode:NSRunLoopCommonModes];
+              }
+          }
+
+          - (void)mkFinalFPSTick:(CADisplayLink *)link
+          {
+              if (_mkFPSLastTime <= 0)
+              {
+                  _mkFPSLastTime = link.timestamp;
+                  _mkFPSFrames = 0;
+                  return;
+              }
+
+              _mkFPSFrames += 1;
+
+              CFTimeInterval elapsed =
+                  link.timestamp - _mkFPSLastTime;
+
+              if (elapsed >= 0.50)
+              {
+                  double fps =
+                      (double)_mkFPSFrames / elapsed;
+
+                  _mkFPSLabel.text =
+                      [NSString stringWithFormat:@"FPS %.0f", fps];
+
+                  _mkFPSFrames = 0;
+                  _mkFPSLastTime = link.timestamp;
+              }
+          }
+
+          // END MKFINAL_GAME_UI
+              '''
+
+              text = text.replace(marker, methods + marker, 1)
+
+              layout_pattern = re.compile(
+                  r'(_rootContainer\s*=\s*'
+                  r'\[self createSceneView:_currentScene '
+                  r'frame:viewRect\];\s*'
+                  r'\[self\.view addSubview:_rootContainer\];\s*'
+                  r'\[self updateScreen\];)'
+              )
+
+              replacement = (
+                  r'\1'
+                  '\n\t[self mkFinalInstallControls];'
+                  '\n\t[self mkFinalApplyLayout];'
+              )
+
+              text, count = layout_pattern.subn(
+                  replacement,
+                  text,
+                  count=1
+              )
+
+              if count != 1:
+                  raise SystemExit("ERROR: VIEW LAYOUT PATCH FAILED")
+
+              start_marker = (
+                  '[[self findGamepad] '
+                  'applyConfiguration:_gamepadConfig];'
+              )
+
+              if start_marker not in text:
+                  raise SystemExit("ERROR: EMULATOR START MARKER NOT FOUND")
+
+              text = text.replace(
+                  start_marker,
+                  start_marker +
+                  '\n\t[self mkFinalInstallControls];'
+                  '\n\t[self mkFinalApplyLayout];',
+                  1
+              )
+
+          if "MKFINAL_DEALLOC_FPS" not in text:
+              old = (
+                  "- (void)dealloc\n"
+                  "{\n"
+                  "\t[[NSNotificationCenter defaultCenter] removeObserver:self];\n"
+                  "}"
+              )
+
+              new = (
+                  "- (void)dealloc\n"
+                  "{\n"
+                  "    // MKFINAL_DEALLOC_FPS\n"
+                  "    [_mkFPSLink invalidate];\n"
+                  "    _mkFPSLink = nil;\n"
+                  "\t[[NSNotificationCenter defaultCenter] removeObserver:self];\n"
+                  "}"
+              )
+
+              if old in text:
+                  text = text.replace(old, new, 1)
+
+          vc.write_text(text, encoding="utf-8")
+
+          print("ALL FINAL PATCHES APPLIED")
+          PY
+
+      - name: Apply branding and landscape
+        run: |
+          set -e
+
+          PLIST="dospad/Resources/iDOS-Info.plist"
+          if [ ! -f "$PLIST" ]; then
+            PLIST=$(find dospad -type f -name "*Info.plist" | head -1)
+          fi
+
+          test -n "$PLIST"
+
+          plutil -replace CFBundleDisplayName -string "MK1 Remastered" "$PLIST" || true
+          plutil -replace CFBundleName -string "MK1 Remastered" "$PLIST" || true
+
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations array" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationLandscapeLeft" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:1 string UIInterfaceOrientationLandscapeRight" "$PLIST"
+
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations~iphone" "$PLIST" || true
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~iphone array" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~iphone:0 string UIInterfaceOrientationLandscapeLeft" "$PLIST"
+          /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations~iphone:1 string UIInterfaceOrientationLandscapeRight" "$PLIST"
+
+          /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations~ipad" "$PLIST" || true
+
+      - name: Generate dark Scorpion app icon
+        run: |
+          set -e
+
+          git clone \
+            --depth 1 \
+            https://github.com/rwfpl/rewolf-mortal-kombat-viewer.git \
+            icon-tools
+
+          python3 <<'PY'
+          from pathlib import Path
+          import glob
+          import json
+          import os
+          import sys
+          from PIL import Image, ImageDraw
+
+          sys.path.insert(0, str(Path("icon-tools").resolve()))
+
+          import mkexec
+          import grafile
+
+          mk = mkexec.MkExec("game/MK1/MK1.EXE")
+          gra = grafile.GraFile(mk, "game/MK1/GRAPHICS/NINJA.GRA")
+          sprites = list(gra.sprites.values())
+
+          candidates = [
+              s for s in sprites
+              if s.width >= 20 and s.height >= 40 and s.height > s.width * 0.9
+          ]
+
+          if not candidates:
+              candidates = sprites
+
+          if not candidates:
+              raise SystemExit("ERROR: NO NINJA SPRITE FOR ICON")
+
+          sprite = max(candidates, key=lambda s: s.width * s.height)
+
+          mask = Image.new("L", (sprite.width, sprite.height), 0)
+          px = mask.load()
+
+          for y in range(sprite.height):
+              for x in range(sprite.width):
+                  if sprite.data[y * sprite.width + x] != 0:
+                      px[x, y] = 255
+
+          bbox = mask.getbbox()
+          if bbox:
+              mask = mask.crop(bbox)
+
+          icon_sets = glob.glob("dospad/**/*.appiconset", recursive=True)
+          if not icon_sets:
+              raise SystemExit("ERROR: APPICON SET NOT FOUND")
+
+          icon_dir = icon_sets[0]
+
+          for old in glob.glob(os.path.join(icon_dir, "*.png")):
+              os.remove(old)
+
+          entries = [
+              ("iphone", "20x20", "2x", 40, "Scorpion40.png"),
+              ("iphone", "20x20", "3x", 60, "Scorpion60.png"),
+              ("iphone", "29x29", "2x", 58, "Scorpion58.png"),
+              ("iphone", "29x29", "3x", 87, "Scorpion87.png"),
+              ("iphone", "40x40", "2x", 80, "Scorpion80.png"),
+              ("iphone", "40x40", "3x", 120, "Scorpion120a.png"),
+              ("iphone", "60x60", "2x", 120, "Scorpion120b.png"),
+              ("iphone", "60x60", "3x", 180, "Scorpion180.png"),
+              ("ios-marketing", "1024x1024", "1x", 1024, "Scorpion1024.png"),
+          ]
+
+          def make_icon(size, output):
+              img = Image.new("RGB", (size, size), (4, 4, 6))
+              draw = ImageDraw.Draw(img)
+
+              for y in range(size):
+                  t = y / max(size - 1, 1)
+                  draw.line(
+                      (0, y, size, y),
+                      fill=(
+                          int(18 * (1 - t) + 3 * t),
+                          int(13 * (1 - t) + 3 * t),
+                          int(16 * (1 - t) + 5 * t)
+                      )
+                  )
+
+              m = int(size * 0.10)
+              draw.ellipse(
+                  (m, m, size - m, size - m),
+                  fill=(16, 11, 4),
+                  outline=(105, 70, 8),
+                  width=max(1, int(size * 0.01))
+              )
+
+              scale = min(
+                  (size * 0.54) / max(mask.width, 1),
+                  (size * 0.72) / max(mask.height, 1)
+              )
+
+              new_size = (
+                  max(1, int(mask.width * scale)),
+                  max(1, int(mask.height * scale))
+              )
+
+              fig_mask = mask.resize(new_size, Image.Resampling.NEAREST)
+              fig = Image.new("RGBA", new_size, (238, 176, 27, 255))
+              rgba = img.convert("RGBA")
+              rgba.paste(
+                  fig,
+                  ((size - new_size[0]) // 2, int(size * 0.15)),
+                  fig_mask
+              )
+
+              fade = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              fd = ImageDraw.Draw(fade)
+              fd.rectangle(
+                  (0, int(size * 0.72), size, size),
+                  fill=(0, 0, 0, 95)
+              )
+              rgba.alpha_composite(fade)
+
+              rgba.convert("RGB").save(output, "PNG")
+
+          images = []
+
+          for idiom, psize, scale, pixels, filename in entries:
+              out = os.path.join(icon_dir, filename)
+              make_icon(pixels, out)
+              images.append({
+                  "idiom": idiom,
+                  "size": psize,
+                  "scale": scale,
+                  "filename": filename
+              })
+
+          with open(
+              os.path.join(icon_dir, "Contents.json"),
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  {
+                      "images": images,
+                      "info": {"author": "xcode", "version": 1}
+                  },
+                  f,
+                  indent=2
+              )
+
+          print("SCORPION DARK ICON READY")
+          PY
+
+      - name: Verify patches
+        run: |
+          set -e
+          grep -n "MKFINAL_AUTOBOOT" dospad/dospad/Main/DOSPadEmulator.m
+          grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "MKFINAL_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "_mkFPSLink" dospad/dospad/Main/DPEmulatorViewController.m
+
+      - name: Build final MK1 engine
+        run: |
+          set +e
+          set -o pipefail
+
+          xattr -cr dospad || true
+
+          xcodebuild \
+            -project dospad/dospad.xcodeproj \
+            -scheme iDOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            TARGETED_DEVICE_FAMILY=1 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PRODUCT_BUNDLE_IDENTIFIER="com.mk1.final.remastered" \
+            build \
+            2>&1 | tee output/xcodebuild.log
+
+          STATUS=${PIPESTATUS[0]}
+
+          echo "===== COMPILER ERRORS ====="
+          grep -n -E "error:|fatal error:" output/xcodebuild.log | tail -160 || true
+
+          if [ "$STATUS" -ne 0 ]; then
+            exit "$STATUS"
+          fi
+
+      - name: Locate built app
+        run: |
+          set -e
+
+          APP=$(
+            find build/Build/Products \
+              -type d \
+              -name "iDOS.app" \
+              | head -1
+          )
+
+          if [ -z "$APP" ]; then
+            APP=$(
+              find build/Build/Products \
+                -type d \
+                -name "*.app" \
+                | head -1
+            )
+          fi
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: APP NOT FOUND"
+            exit 1
+          fi
+
+          echo "$APP" > output/app-path.txt
+          echo "APP=$APP"
+
+      - name: Put complete MK1 inside app
+        run: |
+          set -e
+
+          APP=$(cat output/app-path.txt)
+
+          rm -rf "$APP/MKGame"
+          mkdir -p "$APP/MKGame"
+          cp -R game/MK1/. "$APP/MKGame/"
+
+          rm -rf "$APP/PlugIns"
+
+          test -f "$APP/MKGame/MK1.EXE"
+          test -f "$APP/MKGame/MKAUTO.TXT"
+          test -f "$APP/MKGame/CLASSIC.CFG"
+          test -f "$APP/MKGame/REMASTER.CFG"
+
+          echo "GAME FILES=$(find "$APP/MKGame" -type f | wc -l | tr -d ' ')"
+          echo "GRA FILES=$(find "$APP/MKGame" -type f -iname '*.GRA' | wc -l | tr -d ' ')"
+
+      - name: Create build info
+        run: |
+          set -e
+
+          APP=$(cat output/app-path.txt)
+
+          {
+            echo "FINAL MK1 CLASSIC + REMASTERED"
+            echo
+            echo "ORIGINAL MK1.EXE: YES"
+            echo "FULL ORIGINAL GAME DATA: YES"
+            echo "CLASSIC: normal2x + nearest final scale"
+            echo "REMASTERED: hq2x + linear final scale"
+            echo "CORE: dynamic"
+            echo "CYCLES: max"
+            echo "FPS COUNTER: display FPS"
+            echo "CLEAN GAME VIEW: YES"
+            echo "LANDSCAPE ONLY: YES"
+            echo "SCORPION DARK ICON: YES"
+            echo "REPTILE/GORO/SHANG TSUNG/FATALITIES: original MK1 logic"
+            echo "GAME FILES=$(find "$APP/MKGame" -type f | wc -l | tr -d ' ')"
+          } > output/BUILD-INFO.txt
+
+          cat output/BUILD-INFO.txt
+
+      - name: Create KSign IPA
+        run: |
+          set -e
+
+          APP=$(cat output/app-path.txt)
+
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP" Payload/
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            output/MK1-FINAL-Classic-Remastered-KSign.ipa
+
+          ls -lh output/MK1-FINAL-Classic-Remastered-KSign.ipa
+
+      - name: Upload final MK1
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-FINAL-Classic-Remastered-KSign
+          path: |
+            output/MK1-FINAL-Classic-Remastered-KSign.ipa
+            output/BUILD-INFO.txt
+          compression-level: 0
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-FINAL-FAIL
+          path: |
+            output/xcodebuild.log
+            output/app-path.txt
+            output/BUILD-INFO.txt
+          if-no-files-found: ignore
