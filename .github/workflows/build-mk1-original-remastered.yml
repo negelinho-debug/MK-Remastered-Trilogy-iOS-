@@ -1,0 +1,2592 @@
+name: Build MK1 ORIGINAL Remastered
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 90
+
+    steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # TOOLS
+      # ==========================================================
+
+      - name: Install tools
+        run: |
+          set -e
+
+          brew install innoextract p7zip
+
+          python3 -m pip install \
+            --break-system-packages pillow || \
+          python3 -m pip install \
+            --user pillow
+
+          echo "===== XCODE ====="
+          xcodebuild -version
+
+          echo "===== INNOEXTRACT ====="
+          innoextract --version
+
+      # ==========================================================
+      # PREPARE
+      # ==========================================================
+
+      - name: Prepare folders
+        run: |
+          set -e
+
+          rm -rf raw-installers
+          rm -rf installers
+          rm -rf release-files
+          rm -rf extracted
+          rm -rf game
+          rm -rf dospad
+          rm -rf build
+          rm -rf Payload
+          rm -rf output
+
+          mkdir -p raw-installers
+          mkdir -p installers
+          mkdir -p release-files
+          mkdir -p extracted
+          mkdir -p game
+          mkdir -p output
+
+      # ==========================================================
+      # FIND INSTALLERS IN REPOSITORY
+      # ==========================================================
+
+      - name: Collect repository installers
+        run: |
+          set -e
+
+          COUNT=0
+
+          while IFS= read -r FILE; do
+
+            [ -z "$FILE" ] && continue
+
+            COUNT=$((COUNT + 1))
+
+            echo "FOUND:"
+            echo "$FILE"
+
+            cp "$FILE" \
+              "raw-installers/repo_${COUNT}.exe"
+
+          done < <(
+            find . \
+              -type f \
+              -iname "*.exe" \
+              -not -path "./.git/*" \
+              -not -path "./raw-installers/*" \
+              -not -path "./installers/*" \
+              -not -path "./release-files/*" \
+              -not -path "./extracted/*" \
+              -not -path "./game/*" \
+              -not -path "./dospad/*" \
+              -not -path "./build/*" \
+              -not -path "./Payload/*" \
+              -not -path "./output/*" \
+              | sort
+          )
+
+          echo
+          echo "===== REPOSITORY INSTALLERS ====="
+
+          ls -lh raw-installers || true
+
+      # ==========================================================
+      # RELEASE ASSETS
+      # ==========================================================
+
+      - name: Download latest Release installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+
+          TAG=$(
+            gh release list \
+              --limit 1 \
+              --json tagName \
+              --jq '.[0].tagName'
+          )
+
+          echo "LATEST TAG=$TAG"
+
+          if [ -n "$TAG" ]; then
+
+            gh release download "$TAG" \
+              --dir release-files \
+              --pattern "*.exe"
+
+          fi
+
+          INDEX=0
+
+          while IFS= read -r FILE; do
+
+            [ -z "$FILE" ] && continue
+
+            INDEX=$((INDEX + 1))
+
+            cp "$FILE" \
+              "raw-installers/release_${INDEX}.exe"
+
+          done < <(
+            find release-files \
+              -type f \
+              -iname "*.exe" \
+              | sort
+          )
+
+          echo
+          echo "===== ALL RAW INSTALLERS ====="
+
+          ls -lh raw-installers || true
+
+          exit 0
+
+      # ==========================================================
+      # DEDUPLICATE
+      # ==========================================================
+
+      - name: Deduplicate installers
+        run: |
+          set -e
+
+          FOUND=0
+
+          for FILE in raw-installers/*.exe; do
+
+            [ -f "$FILE" ] || continue
+
+            FOUND=1
+
+            HASH=$(
+              shasum -a 256 "$FILE" \
+              | awk '{print $1}'
+            )
+
+            DEST="installers/${HASH}.exe"
+
+            if [ ! -f "$DEST" ]; then
+
+              cp "$FILE" "$DEST"
+
+            fi
+
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+
+            echo "ERROR: NO INSTALLERS FOUND"
+
+            exit 1
+
+          fi
+
+          echo
+          echo "===== UNIQUE INSTALLERS ====="
+
+          ls -lh installers
+
+      # ==========================================================
+      # EXTRACT
+      # ==========================================================
+
+      - name: Extract installers
+        run: |
+          set -e
+
+          INDEX=0
+
+          while IFS= read -r FILE; do
+
+            [ -z "$FILE" ] && continue
+
+            INDEX=$((INDEX + 1))
+
+            DEST="extracted/pkg${INDEX}"
+
+            mkdir -p "$DEST"
+
+            echo
+            echo "========================================"
+            echo "EXTRACTING:"
+            echo "$FILE"
+            echo "========================================"
+
+            set +e
+
+            innoextract \
+              --extract \
+              --output-dir "$DEST" \
+              "$FILE"
+
+            STATUS=$?
+
+            if [ "$STATUS" -ne 0 ]; then
+
+              echo "Trying 7z..."
+
+              7z x \
+                "$FILE" \
+                "-o$DEST" \
+                -y
+
+            fi
+
+            set -e
+
+          done < <(
+            find installers \
+              -type f \
+              -iname "*.exe" \
+              | sort
+          )
+
+          echo
+          echo "===== MK1.EXE RESULTS ====="
+
+          find extracted \
+            -type f \
+            -iname "MK1.EXE" \
+            -print || true
+
+      # ==========================================================
+      # NORMALIZE REAL MK1
+      # ==========================================================
+
+      - name: Normalize real MK1
+        run: |
+          set -e
+
+          MK1_EXE=$(
+            find extracted \
+              -type f \
+              -iname "MK1.EXE" \
+              -not -path "*/__support/*" \
+              | head -1
+          )
+
+          echo "MK1_EXE=$MK1_EXE"
+
+          if [ -z "$MK1_EXE" ]; then
+
+            echo "ERROR: REAL MK1.EXE NOT FOUND"
+
+            exit 1
+
+          fi
+
+          MK1_DIR="$(dirname "$MK1_EXE")"
+
+          echo "MK1_DIR=$MK1_DIR"
+
+          rm -rf game/MK1
+
+          mkdir -p game/MK1
+
+          cp -R \
+            "$MK1_DIR"/. \
+            game/MK1/
+
+          if [ ! -f "game/MK1/MK1.EXE" ]; then
+
+            echo "ERROR: MK1.EXE MISSING AFTER COPY"
+
+            exit 1
+
+          fi
+
+          echo
+          echo "===== MK1 FILE COUNT ====="
+
+          find game/MK1 \
+            -type f \
+            | wc -l
+
+          echo
+          echo "===== GRAPHICS ====="
+
+          find game/MK1 \
+            -type f \
+            -iname "*.GRA" \
+            | head -60
+
+      # ==========================================================
+      # CLONE IDOS
+      # ==========================================================
+
+      - name: Clone iDOS
+        run: |
+          set -e
+
+          git clone \
+            --depth 1 \
+            https://github.com/litchie/dospad.git \
+            dospad
+
+          echo
+          echo "===== PROJECT ====="
+
+          xcodebuild \
+            -project dospad/dospad.xcodeproj \
+            -list
+
+      # ==========================================================
+      # CREATE CLASSIC + REMASTER CONFIGS
+      # ==========================================================
+
+      - name: Create Classic and Remastered configs
+        run: |
+          set -e
+
+          BASE="dospad/Resources/configs/dospad.cfg"
+
+          if [ ! -f "$BASE" ]; then
+
+            echo "ERROR: BASE DOSPAD CONFIG NOT FOUND"
+
+            exit 1
+
+          fi
+
+          cp "$BASE" \
+            game/MK1/CLASSIC.CFG
+
+          cp "$BASE" \
+            game/MK1/REMASTER.CFG
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          configs = {
+              "game/MK1/CLASSIC.CFG": {
+                  "frameskip": "0",
+                  "core": "dynamic",
+                  "cycles": "max 95%",
+                  "scaler": "normal2x"
+              },
+
+              "game/MK1/REMASTER.CFG": {
+                  "frameskip": "0",
+                  "core": "dynamic",
+                  "cycles": "max 95%",
+                  "scaler": "hq2x"
+              }
+          }
+
+          def set_option(text, key, value):
+              pattern = rf"(?m)^{re.escape(key)}\s*=.*$"
+
+              if re.search(pattern, text):
+                  return re.sub(
+                      pattern,
+                      f"{key}={value}",
+                      text
+                  )
+
+              section = "[render]"
+
+              if key in ("frameskip", "scaler") and section in text:
+                  return text.replace(
+                      section,
+                      section + f"\n{key}={value}",
+                      1
+                  )
+
+              section = "[cpu]"
+
+              if key in ("core", "cycles") and section in text:
+                  return text.replace(
+                      section,
+                      section + f"\n{key}={value}",
+                      1
+                  )
+
+              return text + f"\n{key}={value}\n"
+
+          for filename, options in configs.items():
+
+              path = Path(filename)
+
+              text = path.read_text(
+                  errors="ignore"
+              )
+
+              for key, value in options.items():
+
+                  text = set_option(
+                      text,
+                      key,
+                      value
+                  )
+
+              path.write_text(
+                  text
+              )
+
+          print("CLASSIC AND REMASTER CONFIGS READY")
+          PY
+
+          echo
+          echo "===== CLASSIC ====="
+
+          grep -E \
+            "frameskip=|core=|cycles=|scaler=" \
+            game/MK1/CLASSIC.CFG || true
+
+          echo
+          echo "===== REMASTER ====="
+
+          grep -E \
+            "frameskip=|core=|cycles=|scaler=" \
+            game/MK1/REMASTER.CFG || true
+
+      # ==========================================================
+      # AUTOBOOT
+      # ==========================================================
+
+      - name: Create MK1 auto boot
+        run: |
+          set -e
+
+          cat > game/MK1/MKAUTO.TXT <<'EOF'
+          MK1.EXE
+          EOF
+
+          cp \
+            game/MK1/CLASSIC.CFG \
+            game/MK1/dospad.cfg
+
+          echo "===== AUTOBOOT ====="
+
+          cat game/MK1/MKAUTO.TXT
+
+      # ==========================================================
+      # PATCH AUTOBOOT INTO IDOS
+      # ==========================================================
+
+      - name: Patch real MK1 autoboot
+        run: |
+          set -e
+
+          FILE="dospad/dospad/Main/DOSPadEmulator.m"
+
+          python3 - "$FILE" <<'PY'
+          import sys
+
+          path = sys.argv[1]
+
+          with open(
+              path,
+              "r",
+              encoding="utf-8"
+          ) as file:
+              text = file.read()
+
+          if "MK1_REAL_AUTOBOOT" in text:
+              print("AUTOBOOT ALREADY PATCHED")
+              raise SystemExit(0)
+
+          marker = '[self.commandList addObject:@"REM END AUTOMOUNT"];'
+
+          if marker not in text:
+              raise SystemExit(
+                  "ERROR: AUTOBOOT MARKER NOT FOUND"
+              )
+
+          patch = marker + r'''
+
+              // ==================================================
+              // MK1_REAL_AUTOBOOT
+              // ==================================================
+
+              NSString *mkBootPath =
+                  [self.workingDirectory.path
+                   stringByAppendingPathComponent:
+                   @"MKAUTO.TXT"];
+
+              if ([[NSFileManager defaultManager]
+                   fileExistsAtPath:mkBootPath])
+              {
+                  NSError *mkError = nil;
+
+                  NSString *mkText =
+                      [NSString
+                       stringWithContentsOfFile:
+                       mkBootPath
+                       encoding:
+                       NSUTF8StringEncoding
+                       error:
+                       &mkError];
+
+                  if (mkText.length > 0)
+                  {
+                      NSArray *mkLines =
+                          [mkText
+                           componentsSeparatedByCharactersInSet:
+                           [NSCharacterSet
+                            newlineCharacterSet]];
+
+                      for (NSString *mkRaw in mkLines)
+                      {
+                          NSString *mkLine =
+                              [mkRaw
+                               stringByTrimmingCharactersInSet:
+                               [NSCharacterSet
+                                whitespaceAndNewlineCharacterSet]];
+
+                          if (mkLine.length > 0)
+                          {
+                              [self.commandList
+                               addObject:
+                               mkLine];
+                          }
+                      }
+                  }
+              }
+
+              // ===== END MK1_REAL_AUTOBOOT =====
+          '''
+
+          text = text.replace(
+              marker,
+              patch,
+              1
+          )
+
+          with open(
+              path,
+              "w",
+              encoding="utf-8"
+          ) as file:
+              file.write(text)
+
+          print("REAL MK1 AUTOBOOT PATCHED")
+          PY
+
+      # ==========================================================
+      # MAIN MENU
+      # CLASSIC / REMASTERED
+      # ==========================================================
+
+      - name: Add original MK1 launcher
+        run: |
+          set -e
+
+          FILE="dospad/dospad/Main/DPAppDelegate.m"
+
+          python3 - "$FILE" <<'PY'
+          import sys
+
+          path = sys.argv[1]
+
+          with open(
+              path,
+              "r",
+              encoding="utf-8"
+          ) as file:
+              text = file.read()
+
+          if "MK1_ORIGINAL_LAUNCHER" in text:
+              print("LAUNCHER ALREADY PATCHED")
+              raise SystemExit(0)
+
+          import_marker = '#import <AVFoundation/AVFoundation.h>'
+
+          if import_marker not in text:
+              raise SystemExit(
+                  "ERROR: AVFOUNDATION IMPORT MARKER NOT FOUND"
+              )
+
+          launcher = r'''
+
+          // ======================================================
+          // MK1_ORIGINAL_LAUNCHER
+          // ======================================================
+
+          @interface DPAppDelegate (MK1Original)
+
+          - (void)mkShowOriginalLauncher;
+          - (void)mkLaunchOriginalMode:(NSString *)mode;
+
+          @end
+
+
+          @interface MK1OriginalLauncherController
+              : UIViewController
+
+          @property(nonatomic, weak)
+          DPAppDelegate *owner;
+
+          @property(nonatomic, strong)
+          UILabel *titleLabel;
+
+          @property(nonatomic, strong)
+          UILabel *subtitleLabel;
+
+          @property(nonatomic, strong)
+          UIButton *classicButton;
+
+          @property(nonatomic, strong)
+          UIButton *remasterButton;
+
+          @end
+
+
+          @implementation MK1OriginalLauncherController
+
+
+          - (UIButton *)mkButton:
+              (NSString *)title
+          {
+              UIButton *button =
+                  [UIButton
+                   buttonWithType:
+                   UIButtonTypeSystem];
+
+              [button
+               setTitle:
+               title
+               forState:
+               UIControlStateNormal];
+
+              [button
+               setTitleColor:
+               UIColor.whiteColor
+               forState:
+               UIControlStateNormal];
+
+              button.titleLabel.font =
+                  [UIFont
+                   systemFontOfSize:
+                   22
+                   weight:
+                   UIFontWeightBlack];
+
+              button.backgroundColor =
+                  [UIColor
+                   colorWithRed:
+                   0.34
+                   green:
+                   0.018
+                   blue:
+                   0.022
+                   alpha:
+                   1.0];
+
+              button.layer.cornerRadius =
+                  14;
+
+              button.layer.borderWidth =
+                  1;
+
+              button.layer.borderColor =
+                  [UIColor
+                   colorWithWhite:
+                   1.0
+                   alpha:
+                   0.18].CGColor;
+
+              return button;
+          }
+
+
+          - (void)viewDidLoad
+          {
+              [super viewDidLoad];
+
+              self.view.backgroundColor =
+                  [UIColor
+                   colorWithRed:
+                   0.015
+                   green:
+                   0.006
+                   blue:
+                   0.008
+                   alpha:
+                   1.0];
+
+
+              self.titleLabel =
+                  [[UILabel alloc] init];
+
+              self.titleLabel.text =
+                  @"MORTAL KOMBAT";
+
+              self.titleLabel.textAlignment =
+                  NSTextAlignmentCenter;
+
+              self.titleLabel.textColor =
+                  UIColor.whiteColor;
+
+              self.titleLabel.font =
+                  [UIFont
+                   systemFontOfSize:
+                   42
+                   weight:
+                   UIFontWeightBlack];
+
+              [self.view
+               addSubview:
+               self.titleLabel];
+
+
+              self.subtitleLabel =
+                  [[UILabel alloc] init];
+
+              self.subtitleLabel.text =
+                  @"ORIGINAL • REMASTERED";
+
+              self.subtitleLabel.textAlignment =
+                  NSTextAlignmentCenter;
+
+              self.subtitleLabel.textColor =
+                  [UIColor
+                   colorWithRed:
+                   1.0
+                   green:
+                   0.18
+                   blue:
+                   0.15
+                   alpha:
+                   1.0];
+
+              self.subtitleLabel.font =
+                  [UIFont
+                   systemFontOfSize:
+                   17
+                   weight:
+                   UIFontWeightBlack];
+
+              [self.view
+               addSubview:
+               self.subtitleLabel];
+
+
+              self.classicButton =
+                  [self
+                   mkButton:
+                   @"CLASSIC"];
+
+              self.classicButton.tag =
+                  1;
+
+              [self.classicButton
+               addTarget:
+               self
+               action:
+               @selector(modePressed:)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
+              [self.view
+               addSubview:
+               self.classicButton];
+
+
+              self.remasterButton =
+                  [self
+                   mkButton:
+                   @"REMASTERED"];
+
+              self.remasterButton.tag =
+                  2;
+
+              [self.remasterButton
+               addTarget:
+               self
+               action:
+               @selector(modePressed:)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
+              [self.view
+               addSubview:
+               self.remasterButton];
+
+
+              UILabel *info =
+                  [[UILabel alloc] init];
+
+              info.tag =
+                  9955;
+
+              info.text =
+                  @"ORIGINAL MK1 ENGINE";
+
+              info.textAlignment =
+                  NSTextAlignmentCenter;
+
+              info.textColor =
+                  [UIColor
+                   colorWithWhite:
+                   0.58
+                   alpha:
+                   1.0];
+
+              info.font =
+                  [UIFont
+                   systemFontOfSize:
+                   12
+                   weight:
+                   UIFontWeightBold];
+
+              [self.view
+               addSubview:
+               info];
+          }
+
+
+          - (void)modePressed:
+              (UIButton *)sender
+          {
+              self.classicButton.enabled =
+                  NO;
+
+              self.remasterButton.enabled =
+                  NO;
+
+              NSString *mode =
+                  sender.tag == 2
+                  ? @"REMASTERED"
+                  : @"CLASSIC";
+
+              self.subtitleLabel.text =
+                  @"LOADING ORIGINAL MK1...";
+
+              [self.owner
+               mkLaunchOriginalMode:
+               mode];
+          }
+
+
+          - (void)viewDidLayoutSubviews
+          {
+              [super viewDidLayoutSubviews];
+
+              CGFloat width =
+                  CGRectGetWidth(
+                      self.view.bounds
+                  );
+
+              CGFloat height =
+                  CGRectGetHeight(
+                      self.view.bounds
+                  );
+
+
+              self.titleLabel.frame =
+                  CGRectMake(
+                      0,
+                      height * 0.18,
+                      width,
+                      55
+                  );
+
+
+              self.subtitleLabel.frame =
+                  CGRectMake(
+                      0,
+                      height * 0.18 + 55,
+                      width,
+                      30
+                  );
+
+
+              CGFloat buttonWidth =
+                  MIN(
+                      370,
+                      width - 80
+                  );
+
+              CGFloat x =
+                  (width - buttonWidth) / 2;
+
+
+              self.classicButton.frame =
+                  CGRectMake(
+                      x,
+                      height * 0.46,
+                      buttonWidth,
+                      58
+                  );
+
+
+              self.remasterButton.frame =
+                  CGRectMake(
+                      x,
+                      height * 0.46 + 74,
+                      buttonWidth,
+                      58
+                  );
+
+
+              UILabel *info =
+                  (UILabel *)
+                  [self.view
+                   viewWithTag:
+                   9955];
+
+              info.frame =
+                  CGRectMake(
+                      0,
+                      height - 48,
+                      width,
+                      20
+                  );
+          }
+
+
+          - (BOOL)prefersStatusBarHidden
+          {
+              return YES;
+          }
+
+
+          - (UIInterfaceOrientationMask)
+              supportedInterfaceOrientations
+          {
+              return
+                  UIInterfaceOrientationMaskLandscape;
+          }
+
+
+          @end
+
+          // ===== END MK1_ORIGINAL_LAUNCHER =====
+
+          '''
+
+          text = text.replace(
+              import_marker,
+              import_marker + "\n" + launcher,
+              1
+          )
+
+          old_start = (
+              '[self performSelector:'
+              '@selector(startDOS) '
+              'withObject:nil '
+              'afterDelay:1];'
+          )
+
+          new_start = (
+              '[self performSelector:'
+              '@selector(mkShowOriginalLauncher) '
+              'withObject:nil '
+              'afterDelay:0.25];'
+          )
+
+          if old_start not in text:
+              raise SystemExit(
+                  "ERROR: STARTDOS MARKER NOT FOUND"
+              )
+
+          text = text.replace(
+              old_start,
+              new_start,
+              1
+          )
+
+          method_marker = (
+              '-(void)setWindowTitle:(char *)title'
+          )
+
+          if method_marker not in text:
+              raise SystemExit(
+                  "ERROR: METHOD MARKER NOT FOUND"
+              )
+
+          methods = r'''
+
+          // ======================================================
+          // MK1 ORIGINAL LAUNCH METHODS
+          // ======================================================
+
+          - (void)mkShowOriginalLauncher
+          {
+              if ([DOSPadEmulator
+                   sharedInstance].started)
+              {
+                  return;
+              }
+
+              MK1OriginalLauncherController *launcher =
+                  [[MK1OriginalLauncherController
+                    alloc] init];
+
+              launcher.owner =
+                  self;
+
+              launcher.modalPresentationStyle =
+                  UIModalPresentationFullScreen;
+
+              [self.emulatorController
+               presentViewController:
+               launcher
+               animated:
+               NO
+               completion:
+               nil];
+          }
+
+
+          - (void)mkLaunchOriginalMode:
+              (NSString *)mode
+          {
+              NSFileManager *fm =
+                  [NSFileManager
+                   defaultManager];
+
+
+              NSString *bundleGame =
+                  [[[NSBundle
+                     mainBundle]
+                    bundlePath]
+                   stringByAppendingPathComponent:
+                   @"MKGame"];
+
+
+              NSString *documents =
+                  [NSSearchPathForDirectoriesInDomains(
+                      NSDocumentDirectory,
+                      NSUserDomainMask,
+                      YES
+                   ) lastObject];
+
+
+              NSString *destination =
+                  [documents
+                   stringByAppendingPathComponent:
+                   @"MK1Original"];
+
+
+              NSString *exe =
+                  [destination
+                   stringByAppendingPathComponent:
+                   @"MK1.EXE"];
+
+
+              if (![fm
+                    fileExistsAtPath:
+                    exe])
+              {
+                  [fm
+                   removeItemAtPath:
+                   destination
+                   error:
+                   nil];
+
+
+                  NSError *copyError =
+                      nil;
+
+
+                  BOOL result =
+                      [fm
+                       copyItemAtPath:
+                       bundleGame
+                       toPath:
+                       destination
+                       error:
+                       &copyError];
+
+
+                  if (!result)
+                  {
+                      NSLog(
+                          @"MK COPY ERROR: %@",
+                          copyError
+                      );
+
+                      return;
+                  }
+              }
+
+
+              NSString *configName =
+                  [mode
+                   isEqualToString:
+                   @"REMASTERED"]
+                  ? @"REMASTER.CFG"
+                  : @"CLASSIC.CFG";
+
+
+              NSString *sourceConfig =
+                  [destination
+                   stringByAppendingPathComponent:
+                   configName];
+
+
+              NSString *activeConfig =
+                  [destination
+                   stringByAppendingPathComponent:
+                   @"dospad.cfg"];
+
+
+              if ([fm
+                   fileExistsAtPath:
+                   activeConfig])
+              {
+                  [fm
+                   removeItemAtPath:
+                   activeConfig
+                   error:
+                   nil];
+              }
+
+
+              NSError *configError =
+                  nil;
+
+
+              [fm
+               copyItemAtPath:
+               sourceConfig
+               toPath:
+               activeConfig
+               error:
+               &configError];
+
+
+              [[NSUserDefaults
+                standardUserDefaults]
+               setObject:
+               mode
+               forKey:
+               @"MKRenderMode"];
+
+
+              [[NSUserDefaults
+                standardUserDefaults]
+               synchronize];
+
+
+              [DOSPadEmulator
+               sharedInstance]
+                  .workingDirectory =
+                  [NSURL
+                   fileURLWithPath:
+                   destination
+                   isDirectory:
+                   YES];
+
+
+              UIViewController *launcher =
+                  self.emulatorController
+                  .presentedViewController;
+
+
+              [launcher
+               dismissViewControllerAnimated:
+               NO
+               completion:^{
+
+                  [self startDOS];
+
+               }];
+          }
+
+          // ===== END MK1 ORIGINAL LAUNCH METHODS =====
+
+          '''
+
+          text = text.replace(
+              method_marker,
+              methods + method_marker,
+              1
+          )
+
+          with open(
+              path,
+              "w",
+              encoding="utf-8"
+          ) as file:
+              file.write(text)
+
+          print("ORIGINAL MK1 LAUNCHER PATCHED")
+          PY
+
+      # ==========================================================
+      # TOUCH CONTROLS + REMASTER DISPLAY
+      # ==========================================================
+
+      - name: Add MK1 touch controls and remaster renderer
+        run: |
+          set -e
+
+          FILE="dospad/dospad/Main/DPEmulatorViewController.m"
+
+          python3 - "$FILE" <<'PY'
+          import re
+          import sys
+
+          path = sys.argv[1]
+
+          with open(
+              path,
+              "r",
+              encoding="utf-8"
+          ) as file:
+              text = file.read()
+
+          if '#import <QuartzCore/QuartzCore.h>' not in text:
+
+              marker = '#import <UIKit/UIKit.h>'
+
+              if marker not in text:
+                  raise SystemExit(
+                      "ERROR: UIKIT IMPORT NOT FOUND"
+                  )
+
+              text = text.replace(
+                  marker,
+                  marker +
+                  '\n#import <QuartzCore/QuartzCore.h>',
+                  1
+              )
+
+          if "MK1_ORIGINAL_TOUCH" in text:
+
+              print("TOUCH ALREADY PATCHED")
+
+              raise SystemExit(0)
+
+          marker = '// MARK: DPGamepadDelegate'
+
+          if marker not in text:
+              raise SystemExit(
+                  "ERROR: DPGamepadDelegate MARKER NOT FOUND"
+              )
+
+          methods = r'''
+
+          // ======================================================
+          // MK1_ORIGINAL_TOUCH
+          // ======================================================
+
+          - (UIButton *)mkRealButton:
+              (NSString *)title
+              frame:(CGRect)frame
+              key:(NSInteger)key
+          {
+              UIButton *button =
+                  [UIButton
+                   buttonWithType:
+                   UIButtonTypeSystem];
+
+              button.frame =
+                  frame;
+
+              button.tag =
+                  key;
+
+              button.accessibilityIdentifier =
+                  @"MK1_REAL_CONTROL";
+
+              [button
+               setTitle:
+               title
+               forState:
+               UIControlStateNormal];
+
+              [button
+               setTitleColor:
+               UIColor.whiteColor
+               forState:
+               UIControlStateNormal];
+
+              button.titleLabel.font =
+                  [UIFont
+                   systemFontOfSize:
+                   14
+                   weight:
+                   UIFontWeightBlack];
+
+              button.backgroundColor =
+                  [UIColor
+                   colorWithWhite:
+                   0.0
+                   alpha:
+                   0.48];
+
+              button.layer.cornerRadius =
+                  14;
+
+              button.layer.borderWidth =
+                  1;
+
+              button.layer.borderColor =
+                  [UIColor
+                   colorWithWhite:
+                   1.0
+                   alpha:
+                   0.30].CGColor;
+
+              [button
+               addTarget:
+               self
+               action:
+               @selector(mkRealDown:)
+               forControlEvents:
+               UIControlEventTouchDown];
+
+              [button
+               addTarget:
+               self
+               action:
+               @selector(mkRealUp:)
+               forControlEvents:
+               UIControlEventTouchUpInside];
+
+              [button
+               addTarget:
+               self
+               action:
+               @selector(mkRealUp:)
+               forControlEvents:
+               UIControlEventTouchUpOutside];
+
+              [button
+               addTarget:
+               self
+               action:
+               @selector(mkRealUp:)
+               forControlEvents:
+               UIControlEventTouchCancel];
+
+              return button;
+          }
+
+
+          - (void)mkRealDown:
+              (UIButton *)button
+          {
+              [[DOSPadEmulator
+                sharedInstance]
+               sendKey:
+               (int)button.tag
+               pressed:
+               YES];
+          }
+
+
+          - (void)mkRealUp:
+              (UIButton *)button
+          {
+              [[DOSPadEmulator
+                sharedInstance]
+               sendKey:
+               (int)button.tag
+               pressed:
+               NO];
+          }
+
+
+          - (void)mkRemoveRealControls
+          {
+              NSArray *views =
+                  [_rootContainer.subviews
+                   copy];
+
+              for (UIView *view in views)
+              {
+                  if ([view.accessibilityIdentifier
+                       isEqualToString:
+                       @"MK1_REAL_CONTROL"])
+                  {
+                      [view
+                       removeFromSuperview];
+                  }
+              }
+          }
+
+
+          - (void)mkApplyOriginalRenderMode
+          {
+              if (!_rootContainer)
+                  return;
+
+              NSString *mode =
+                  [[NSUserDefaults
+                    standardUserDefaults]
+                   stringForKey:
+                   @"MKRenderMode"];
+
+              BOOL remastered =
+                  [mode
+                   isEqualToString:
+                   @"REMASTERED"];
+
+
+              self.screenView.layer.magnificationFilter =
+                  remastered
+                  ? kCAFilterLinear
+                  : kCAFilterNearest;
+
+
+              self.screenView.layer.minificationFilter =
+                  remastered
+                  ? kCAFilterLinear
+                  : kCAFilterNearest;
+
+
+              self.screenView.layer.contentsScale =
+                  [UIScreen
+                   mainScreen].scale;
+
+
+              UIView *oldLabel =
+                  [_rootContainer
+                   viewWithTag:
+                   8844];
+
+              [oldLabel
+               removeFromSuperview];
+
+
+              UILabel *label =
+                  [[UILabel alloc]
+                   initWithFrame:
+                   CGRectMake(
+                       CGRectGetWidth(
+                           _rootContainer.bounds
+                       ) / 2 - 72,
+                       7,
+                       144,
+                       28
+                   )];
+
+
+              label.tag =
+                  8844;
+
+
+              label.text =
+                  remastered
+                  ? @"REMASTERED"
+                  : @"CLASSIC";
+
+
+              label.textAlignment =
+                  NSTextAlignmentCenter;
+
+
+              label.textColor =
+                  UIColor.whiteColor;
+
+
+              label.font =
+                  [UIFont
+                   systemFontOfSize:
+                   11
+                   weight:
+                   UIFontWeightBlack];
+
+
+              label.backgroundColor =
+                  [UIColor
+                   colorWithWhite:
+                   0.0
+                   alpha:
+                   0.38];
+
+
+              label.layer.cornerRadius =
+                  10;
+
+
+              label.clipsToBounds =
+                  YES;
+
+
+              label.userInteractionEnabled =
+                  NO;
+
+
+              [_rootContainer
+               addSubview:
+               label];
+          }
+
+
+          - (void)mkInstallRealControls
+          {
+              if (!_rootContainer)
+                  return;
+
+              [self
+               mkRemoveRealControls];
+
+
+              DPGamepad *pad =
+                  [self
+                   findGamepad];
+
+              if (pad)
+              {
+                  pad.hidden =
+                      YES;
+              }
+
+
+              CGFloat width =
+                  CGRectGetWidth(
+                      _rootContainer.bounds
+                  );
+
+              CGFloat height =
+                  CGRectGetHeight(
+                      _rootContainer.bounds
+                  );
+
+
+              // MK1 DOS keyboard mapping
+              //
+              // MOVE:
+              // S = UP
+              // X = DOWN
+              // Z = LEFT
+              // C = RIGHT
+              //
+              // ATTACK:
+              // U = HP
+              // N = LP
+              // I = HK
+              // M = LK
+              // J = BLOCK
+              //
+              // F1 = START
+
+
+              NSInteger up =
+                  22;
+
+              NSInteger down =
+                  27;
+
+              NSInteger left =
+                  29;
+
+              NSInteger right =
+                  6;
+
+              NSInteger hp =
+                  24;
+
+              NSInteger lp =
+                  17;
+
+              NSInteger hk =
+                  12;
+
+              NSInteger lk =
+                  16;
+
+              NSInteger block =
+                  13;
+
+              NSInteger start =
+                  58;
+
+
+              CGFloat d =
+                  58;
+
+
+              UIButton *upButton =
+                  [self
+                   mkRealButton:
+                   @"▲"
+                   frame:
+                   CGRectMake(
+                       82,
+                       height - 184,
+                       d,
+                       d
+                   )
+                   key:
+                   up];
+
+
+              UIButton *leftButton =
+                  [self
+                   mkRealButton:
+                   @"◀"
+                   frame:
+                   CGRectMake(
+                       20,
+                       height - 120,
+                       d,
+                       d
+                   )
+                   key:
+                   left];
+
+
+              UIButton *downButton =
+                  [self
+                   mkRealButton:
+                   @"▼"
+                   frame:
+                   CGRectMake(
+                       82,
+                       height - 120,
+                       d,
+                       d
+                   )
+                   key:
+                   down];
+
+
+              UIButton *rightButton =
+                  [self
+                   mkRealButton:
+                   @"▶"
+                   frame:
+                   CGRectMake(
+                       144,
+                       height - 120,
+                       d,
+                       d
+                   )
+                   key:
+                   right];
+
+
+              [_rootContainer
+               addSubview:
+               upButton];
+
+              [_rootContainer
+               addSubview:
+               leftButton];
+
+              [_rootContainer
+               addSubview:
+               downButton];
+
+              [_rootContainer
+               addSubview:
+               rightButton];
+
+
+              CGFloat attack =
+                  54;
+
+              CGFloat ax =
+                  width - 195;
+
+
+              UIButton *hpButton =
+                  [self
+                   mkRealButton:
+                   @"HP"
+                   frame:
+                   CGRectMake(
+                       ax,
+                       height - 184,
+                       attack,
+                       attack
+                   )
+                   key:
+                   hp];
+
+
+              UIButton *hkButton =
+                  [self
+                   mkRealButton:
+                   @"HK"
+                   frame:
+                   CGRectMake(
+                       ax + 60,
+                       height - 184,
+                       attack,
+                       attack
+                   )
+                   key:
+                   hk];
+
+
+              UIButton *lpButton =
+                  [self
+                   mkRealButton:
+                   @"LP"
+                   frame:
+                   CGRectMake(
+                       ax,
+                       height - 120,
+                       attack,
+                       attack
+                   )
+                   key:
+                   lp];
+
+
+              UIButton *lkButton =
+                  [self
+                   mkRealButton:
+                   @"LK"
+                   frame:
+                   CGRectMake(
+                       ax + 60,
+                       height - 120,
+                       attack,
+                       attack
+                   )
+                   key:
+                   lk];
+
+
+              UIButton *blockButton =
+                  [self
+                   mkRealButton:
+                   @"BLK"
+                   frame:
+                   CGRectMake(
+                       ax + 120,
+                       height - 152,
+                       attack,
+                       attack
+                   )
+                   key:
+                   block];
+
+
+              [_rootContainer
+               addSubview:
+               hpButton];
+
+              [_rootContainer
+               addSubview:
+               hkButton];
+
+              [_rootContainer
+               addSubview:
+               lpButton];
+
+              [_rootContainer
+               addSubview:
+               lkButton];
+
+              [_rootContainer
+               addSubview:
+               blockButton];
+
+
+              UIButton *startButton =
+                  [self
+                   mkRealButton:
+                   @"START"
+                   frame:
+                   CGRectMake(
+                       width / 2 - 38,
+                       height - 48,
+                       76,
+                       35
+                   )
+                   key:
+                   start];
+
+
+              [_rootContainer
+               addSubview:
+               startButton];
+
+
+              UIButton *escButton =
+                  [self
+                   mkRealButton:
+                   @"ESC"
+                   frame:
+                   CGRectMake(
+                       10,
+                       8,
+                       52,
+                       34
+                   )
+                   key:
+                   41];
+
+
+              [_rootContainer
+               addSubview:
+               escButton];
+          }
+
+          // ===== END MK1_ORIGINAL_TOUCH =====
+
+          '''
+
+          text = text.replace(
+              marker,
+              methods + marker,
+              1
+          )
+
+
+          layout_pattern = re.compile(
+              r'(_rootContainer\s*=\s*'
+              r'\[self createSceneView:_currentScene '
+              r'frame:viewRect\];\s*'
+              r'\[self\.view addSubview:_rootContainer\];\s*'
+              r'\[self updateScreen\];)'
+          )
+
+
+          layout_replacement = (
+              r'\1'
+              '\n\t[self mkInstallRealControls];'
+              '\n\t[self mkApplyOriginalRenderMode];'
+          )
+
+
+          text, count = layout_pattern.subn(
+              layout_replacement,
+              text,
+              count=1
+          )
+
+
+          if count != 1:
+              raise SystemExit(
+                  "ERROR: VIEW LAYOUT PATCH FAILED"
+              )
+
+
+          start_marker = (
+              '[[self findGamepad] '
+              'applyConfiguration:_gamepadConfig];'
+          )
+
+
+          if start_marker not in text:
+              raise SystemExit(
+                  "ERROR: EMULATOR START MARKER NOT FOUND"
+              )
+
+
+          start_replacement = (
+              start_marker +
+              '\n\t[self mkInstallRealControls];' +
+              '\n\t[self mkApplyOriginalRenderMode];'
+          )
+
+
+          text = text.replace(
+              start_marker,
+              start_replacement,
+              1
+          )
+
+
+          with open(
+              path,
+              "w",
+              encoding="utf-8"
+          ) as file:
+              file.write(text)
+
+
+          print(
+              "MK1 REAL TOUCH + RENDER MODE PATCHED"
+          )
+          PY
+
+      # ==========================================================
+      # BRANDING
+      # ==========================================================
+
+      - name: Apply MK1 branding
+        run: |
+          set -e
+
+          PLIST="dospad/Resources/iDOS-Info.plist"
+
+          if [ ! -f "$PLIST" ]; then
+
+            PLIST=$(
+              find dospad \
+                -type f \
+                -name "*Info.plist" \
+                | head -1
+            )
+
+          fi
+
+          echo "PLIST=$PLIST"
+
+          if [ -z "$PLIST" ]; then
+
+            echo "ERROR: INFO.PLIST NOT FOUND"
+
+            exit 1
+
+          fi
+
+
+          plutil \
+            -replace CFBundleDisplayName \
+            -string "MK1 Remastered" \
+            "$PLIST" || true
+
+
+          plutil \
+            -replace CFBundleName \
+            -string "MK1 Remastered" \
+            "$PLIST" || true
+
+      # ==========================================================
+      # ICON
+      # ==========================================================
+
+      - name: Generate MK1 app icon
+        run: |
+          set -e
+
+          python3 <<'PY'
+          from PIL import Image
+          from PIL import ImageDraw
+          from PIL import ImageFont
+          import glob
+          import json
+          import os
+
+          sets = glob.glob(
+              "dospad/**/*.appiconset",
+              recursive=True
+          )
+
+          if not sets:
+              raise SystemExit(
+                  "ERROR: APPICON SET NOT FOUND"
+              )
+
+          icon_dir = sets[0]
+
+          print(
+              "ICON DIR:",
+              icon_dir
+          )
+
+          for old in glob.glob(
+              os.path.join(
+                  icon_dir,
+                  "*.png"
+              )
+          ):
+              os.remove(old)
+
+
+          entries = [
+              ("iphone", "20x20", "2x", 40, "mk40.png"),
+              ("iphone", "20x20", "3x", 60, "mk60a.png"),
+              ("iphone", "29x29", "2x", 58, "mk58.png"),
+              ("iphone", "29x29", "3x", 87, "mk87.png"),
+              ("iphone", "40x40", "2x", 80, "mk80.png"),
+              ("iphone", "40x40", "3x", 120, "mk120a.png"),
+              ("iphone", "60x60", "2x", 120, "mk120b.png"),
+              ("iphone", "60x60", "3x", 180, "mk180.png"),
+              ("ios-marketing", "1024x1024", "1x", 1024, "mk1024.png")
+          ]
+
+
+          def font(size):
+              candidates = [
+                  "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                  "/System/Library/Fonts/Supplemental/Arial.ttf"
+              ]
+
+              for candidate in candidates:
+
+                  if os.path.exists(candidate):
+
+                      return ImageFont.truetype(
+                          candidate,
+                          size
+                      )
+
+              return ImageFont.load_default()
+
+
+          def generate(px, output):
+
+              image = Image.new(
+                  "RGB",
+                  (px, px),
+                  (9, 5, 7)
+              )
+
+              draw = ImageDraw.Draw(
+                  image
+              )
+
+
+              for y in range(px):
+
+                  factor = y / max(
+                      px - 1,
+                      1
+                  )
+
+                  red = int(
+                      100 * (1 - factor) +
+                      12 * factor
+                  )
+
+                  draw.line(
+                      (0, y, px, y),
+                      fill=(
+                          red,
+                          5,
+                          7
+                      )
+                  )
+
+
+              margin = int(
+                  px * 0.10
+              )
+
+
+              draw.ellipse(
+                  (
+                      margin,
+                      margin,
+                      px - margin,
+                      px - margin
+                  ),
+                  outline=(
+                      240,
+                      48,
+                      40
+                  ),
+                  width=max(
+                      2,
+                      int(px * 0.025)
+                  )
+              )
+
+
+              title_font = font(
+                  max(
+                      12,
+                      int(px * 0.28)
+                  )
+              )
+
+
+              title = "MK1"
+
+
+              box = draw.textbbox(
+                  (0, 0),
+                  title,
+                  font=title_font
+              )
+
+
+              width = box[2] - box[0]
+              height = box[3] - box[1]
+
+
+              draw.text(
+                  (
+                      (px - width) / 2,
+                      px * 0.43 - height / 2
+                  ),
+                  title,
+                  font=title_font,
+                  fill=(
+                      250,
+                      250,
+                      250
+                  )
+              )
+
+
+              small_font = font(
+                  max(
+                      8,
+                      int(px * 0.055)
+                  )
+              )
+
+
+              subtitle = "REMASTERED"
+
+
+              box = draw.textbbox(
+                  (0, 0),
+                  subtitle,
+                  font=small_font
+              )
+
+
+              width = box[2] - box[0]
+
+
+              draw.text(
+                  (
+                      (px - width) / 2,
+                      px * 0.68
+                  ),
+                  subtitle,
+                  font=small_font,
+                  fill=(
+                      245,
+                      75,
+                      66
+                  )
+              )
+
+
+              image.save(
+                  output,
+                  "PNG"
+              )
+
+
+          images = []
+
+
+          for idiom, size, scale, pixels, filename in entries:
+
+              generate(
+                  pixels,
+                  os.path.join(
+                      icon_dir,
+                      filename
+                  )
+              )
+
+              images.append(
+                  {
+                      "idiom": idiom,
+                      "size": size,
+                      "scale": scale,
+                      "filename": filename
+                  }
+              )
+
+
+          contents = {
+              "images": images,
+              "info": {
+                  "author": "xcode",
+                  "version": 1
+              }
+          }
+
+
+          with open(
+              os.path.join(
+                  icon_dir,
+                  "Contents.json"
+              ),
+              "w",
+              encoding="utf-8"
+          ) as file:
+
+              json.dump(
+                  contents,
+                  file,
+                  indent=2
+              )
+
+
+          print(
+              "ICON SUCCESS"
+          )
+          PY
+
+      # ==========================================================
+      # VERIFY SOURCE PATCHES
+      # ==========================================================
+
+      - name: Verify patches
+        run: |
+          set -e
+
+          grep -n \
+            "MK1_REAL_AUTOBOOT" \
+            dospad/dospad/Main/DOSPadEmulator.m
+
+
+          grep -n \
+            "MK1_ORIGINAL_LAUNCHER" \
+            dospad/dospad/Main/DPAppDelegate.m
+
+
+          grep -n \
+            "MK1_ORIGINAL_TOUCH" \
+            dospad/dospad/Main/DPEmulatorViewController.m
+
+
+          echo
+          echo "ALL MK1 PATCHES FOUND"
+
+      # ==========================================================
+      # BUILD
+      # ==========================================================
+
+      - name: Build original MK1 engine
+        run: |
+          set +e
+          set -o pipefail
+
+          xattr -cr dospad || true
+
+
+          xcodebuild \
+            -project dospad/dospad.xcodeproj \
+            -scheme iDOS \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            TARGETED_DEVICE_FAMILY=1 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PRODUCT_BUNDLE_IDENTIFIER="com.mk1original.remastered" \
+            build \
+            2>&1 \
+            | tee output/xcodebuild.log
+
+
+          STATUS=${PIPESTATUS[0]}
+
+
+          echo
+          echo "========================================"
+          echo "COMPILER ERRORS"
+          echo "========================================"
+
+
+          grep -n \
+            -E "error:|fatal error:" \
+            output/xcodebuild.log \
+            | tail -150 || true
+
+
+          echo
+          echo "BUILD STATUS=$STATUS"
+
+
+          if [ "$STATUS" -ne 0 ]; then
+
+            exit "$STATUS"
+
+          fi
+
+      # ==========================================================
+      # FIND APP
+      # ==========================================================
+
+      - name: Locate app
+        run: |
+          set -e
+
+          echo "===== APP RESULTS ====="
+
+          find build \
+            -type d \
+            -name "*.app" \
+            -print
+
+
+          APP=$(
+            find build/Build/Products \
+              -type d \
+              -name "iDOS.app" \
+              | head -1
+          )
+
+
+          if [ -z "$APP" ]; then
+
+            APP=$(
+              find build/Build/Products \
+                -type d \
+                -name "*.app" \
+                | head -1
+            )
+
+          fi
+
+
+          if [ -z "$APP" ]; then
+
+            echo "ERROR: BUILT APP NOT FOUND"
+
+            exit 1
+
+          fi
+
+
+          echo "$APP" \
+            > output/app-path.txt
+
+
+          echo "APP=$APP"
+
+      # ==========================================================
+      # ADD REAL ORIGINAL MK1
+      # KSign WILL SIGN EVERYTHING AFTERWARD
+      # ==========================================================
+
+      - name: Add original MK1 into app
+        run: |
+          set -e
+
+          APP=$(
+            cat output/app-path.txt
+          )
+
+
+          rm -rf \
+            "$APP/MKGame"
+
+
+          mkdir -p \
+            "$APP/MKGame"
+
+
+          cp -R \
+            game/MK1/. \
+            "$APP/MKGame/"
+
+
+          echo
+          echo "===== VERIFY ORIGINAL GAME ====="
+
+
+          test -f \
+            "$APP/MKGame/MK1.EXE"
+
+
+          test -f \
+            "$APP/MKGame/CLASSIC.CFG"
+
+
+          test -f \
+            "$APP/MKGame/REMASTER.CFG"
+
+
+          test -f \
+            "$APP/MKGame/MKAUTO.TXT"
+
+
+          echo "MK1.EXE:"
+          ls -lh \
+            "$APP/MKGame/MK1.EXE"
+
+
+          echo
+          echo "GRA COUNT:"
+
+          find \
+            "$APP/MKGame" \
+            -type f \
+            -iname "*.GRA" \
+            | wc -l
+
+
+          echo
+          echo "TOTAL MK1 FILES:"
+
+          find \
+            "$APP/MKGame" \
+            -type f \
+            | wc -l
+
+      # ==========================================================
+      # VERIFY APP BEFORE IPA
+      # ==========================================================
+
+      - name: Verify final app
+        run: |
+          set -e
+
+          APP=$(
+            cat output/app-path.txt
+          )
+
+
+          echo "===== FINAL APP ====="
+
+          du -sh "$APP"
+
+
+          echo
+          echo "===== BUNDLE ID ====="
+
+          /usr/libexec/PlistBuddy \
+            -c "Print :CFBundleIdentifier" \
+            "$APP/Info.plist"
+
+
+          echo
+          echo "===== GAME ====="
+
+          test -f "$APP/MKGame/MK1.EXE"
+
+          echo "REAL ORIGINAL MK1 PRESENT"
+
+      # ==========================================================
+      # BUILD INFO
+      # ==========================================================
+
+      - name: Create build info
+        run: |
+          set -e
+
+          APP=$(
+            cat output/app-path.txt
+          )
+
+
+          {
+            echo "========================================="
+            echo "MORTAL KOMBAT 1 ORIGINAL REMASTERED"
+            echo "========================================="
+            echo
+            echo "THIS IS NOT A SPRITEKIT REWRITE"
+            echo
+            echo "ENGINE:"
+            echo "ORIGINAL MK1.EXE"
+            echo
+            echo "CLASSIC:"
+            echo "- ORIGINAL MK1 ENGINE"
+            echo "- ORIGINAL GAME LOGIC"
+            echo "- ORIGINAL CHARACTERS"
+            echo "- ORIGINAL AI"
+            echo "- ORIGINAL FATALITIES"
+            echo "- ORIGINAL SECRET REPTILE"
+            echo
+            echo "REMASTERED:"
+            echo "- SAME ORIGINAL MK1.EXE"
+            echo "- HQ2X DOSBOX SCALER"
+            echo "- LINEAR DISPLAY UPSCALING"
+            echo "- FULL LANDSCAPE PRESENTATION"
+            echo
+            echo "TOUCH:"
+            echo "- UP"
+            echo "- DOWN"
+            echo "- LEFT"
+            echo "- RIGHT"
+            echo "- HP"
+            echo "- LP"
+            echo "- HK"
+            echo "- LK"
+            echo "- BLOCK"
+            echo "- START"
+            echo "- ESC"
+            echo
+            echo "GAME FILES=$(
+              find "$APP/MKGame" \
+                -type f \
+                | wc -l \
+                | tr -d ' '
+            )"
+            echo
+            echo "GRA FILES=$(
+              find "$APP/MKGame" \
+                -type f \
+                -iname "*.GRA" \
+                | wc -l \
+                | tr -d ' '
+            )"
+          } > output/BUILD-INFO.txt
+
+
+          cat \
+            output/BUILD-INFO.txt
+
+      # ==========================================================
+      # PACKAGE IPA
+      # ==========================================================
+
+      - name: Create KSign IPA
+        run: |
+          set -e
+
+          APP=$(
+            cat output/app-path.txt
+          )
+
+
+          rm -rf Payload
+
+          mkdir -p Payload
+
+
+          cp -R \
+            "$APP" \
+            Payload/
+
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            output/MK1-Original-Remastered-KSign.ipa
+
+
+          echo
+          echo "===== IPA ====="
+
+          ls -lh \
+            output/MK1-Original-Remastered-KSign.ipa
+
+      # ==========================================================
+      # SUCCESS
+      # ==========================================================
+
+      - name: Upload MK1 IPA
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-Original-Remastered-KSign
+          path: |
+            output/MK1-Original-Remastered-KSign.ipa
+            output/BUILD-INFO.txt
+          compression-level: 0
+
+      # ==========================================================
+      # FAILURE LOGS
+      # ==========================================================
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-Original-Remastered-FAIL
+          path: |
+            output/xcodebuild.log
+            output/app-path.txt
+            output/BUILD-INFO.txt
+          if-no-files-found: ignore
