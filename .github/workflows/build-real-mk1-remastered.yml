@@ -1,0 +1,1490 @@
+name: Build REAL MK1 Remastered
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          set -e
+
+          brew install innoextract p7zip xcodegen
+
+          python3 -m pip install \
+            --break-system-packages pillow || \
+          python3 -m pip install \
+            --user pillow
+
+          echo "===== XCODE ====="
+          xcodebuild -version
+
+          echo "===== XCODEGEN ====="
+          xcodegen --version
+
+          echo "===== INNOEXTRACT ====="
+          innoextract --version
+
+      - name: Prepare folders
+        run: |
+          set -e
+
+          rm -rf raw-installers installers release-files extracted
+          rm -rf mk1-source viewer-tools exported-assets
+          rm -rf MK1Remastered build Payload output
+
+          mkdir -p raw-installers
+          mkdir -p installers
+          mkdir -p release-files
+          mkdir -p extracted
+          mkdir -p mk1-source
+          mkdir -p viewer-tools
+          mkdir -p exported-assets
+          mkdir -p output
+
+      - name: Collect installers from repository
+        run: |
+          set -e
+
+          COUNT=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            COUNT=$((COUNT + 1))
+
+            echo "FOUND:"
+            echo "$FILE"
+
+            cp "$FILE" "raw-installers/repo_${COUNT}.exe"
+
+          done < <(
+            find . \
+              -type f \
+              -iname "*.exe" \
+              -not -path "./.git/*" \
+              -not -path "./raw-installers/*" \
+              -not -path "./installers/*" \
+              -not -path "./release-files/*" \
+              -not -path "./extracted/*" \
+              -not -path "./mk1-source/*" \
+              -not -path "./viewer-tools/*" \
+              -not -path "./exported-assets/*" \
+              -not -path "./MK1Remastered/*" \
+              -not -path "./build/*" \
+              -not -path "./Payload/*" \
+              -not -path "./output/*" \
+              | sort
+          )
+
+          echo
+          echo "===== RAW INSTALLERS FROM REPO ====="
+          ls -lh raw-installers || true
+
+      - name: Download installers from latest Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+
+          echo "===== RELEASES ====="
+          gh release list
+
+          TAG=$(
+            gh release list \
+              --limit 1 \
+              --json tagName \
+              --jq '.[0].tagName'
+          )
+
+          echo "LATEST TAG=$TAG"
+
+          if [ -n "$TAG" ]; then
+            gh release download "$TAG" \
+              --dir release-files \
+              --pattern "*.exe"
+          fi
+
+          N=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            N=$((N + 1))
+
+            cp "$FILE" "raw-installers/release_${N}.exe"
+
+          done < <(
+            find release-files \
+              -type f \
+              -iname "*.exe" \
+              | sort
+          )
+
+          echo
+          echo "===== ALL RAW INSTALLERS ====="
+          ls -lh raw-installers || true
+
+          exit 0
+
+      - name: Deduplicate installers
+        run: |
+          set -e
+
+          FOUND=0
+
+          for FILE in raw-installers/*.exe; do
+            [ -f "$FILE" ] || continue
+
+            FOUND=1
+
+            HASH=$(
+              shasum -a 256 "$FILE" | awk '{print $1}'
+            )
+
+            DEST="installers/${HASH}.exe"
+
+            if [ ! -f "$DEST" ]; then
+              cp "$FILE" "$DEST"
+            fi
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: NO INSTALLERS FOUND"
+            exit 1
+          fi
+
+          echo
+          echo "===== UNIQUE INSTALLERS ====="
+          ls -lh installers
+
+      - name: Extract installers
+        run: |
+          set -e
+
+          INDEX=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            INDEX=$((INDEX + 1))
+            DEST="extracted/pkg${INDEX}"
+
+            mkdir -p "$DEST"
+
+            echo
+            echo "======================================"
+            echo "EXTRACTING:"
+            echo "$FILE"
+            echo "======================================"
+
+            set +e
+
+            innoextract \
+              --extract \
+              --output-dir "$DEST" \
+              "$FILE"
+
+            STATUS=$?
+
+            if [ "$STATUS" -ne 0 ]; then
+              echo "innoextract failed, trying 7z..."
+
+              7z x \
+                "$FILE" \
+                "-o$DEST" \
+                -y
+            fi
+
+            set -e
+
+          done < <(
+            find installers \
+              -type f \
+              -iname "*.exe" \
+              | sort
+          )
+
+          echo
+          echo "===== MK1 SEARCH ====="
+
+          find extracted \
+            -type f \
+            -iname "MK1.EXE" \
+            -print || true
+
+      - name: Normalize MK1 source
+        run: |
+          set -e
+
+          MK1_EXE=$(
+            find extracted \
+              -type f \
+              -iname "MK1.EXE" \
+              -not -path "*/__support/*" \
+              | head -1
+          )
+
+          echo "MK1_EXE=$MK1_EXE"
+
+          if [ -z "$MK1_EXE" ]; then
+            echo "ERROR: REAL MK1.EXE NOT FOUND"
+            exit 1
+          fi
+
+          MK1_DIR="$(dirname "$MK1_EXE")"
+
+          rm -rf mk1-source
+          mkdir -p mk1-source
+
+          cp -R "$MK1_DIR"/. mk1-source/
+
+          echo "$MK1_EXE" > output/mk1-exe.txt
+          echo "$MK1_DIR" > output/mk1-dir.txt
+
+          echo
+          echo "===== MK1 ROOT ====="
+          find mk1-source -maxdepth 2 | sort | head -300
+
+      - name: Validate required MK1 assets
+        run: |
+          set -e
+
+          for FILE in \
+            mk1-source/MK1.EXE \
+            mk1-source/GRAPHICS/KANG.GRA \
+            mk1-source/GRAPHICS/LKATT.GRA \
+            mk1-source/GRAPHICS/RAIDEN.GRA \
+            mk1-source/GRAPHICS/RDATT.GRA \
+            mk1-source/GRAPHICS/MKTITLE1.GRA \
+            mk1-source/GRAPHICS/MISC.GRA \
+            mk1-source/GRAPHICS/FONTS.GRA
+          do
+            if [ ! -f "$FILE" ]; then
+              echo "ERROR: REQUIRED FILE MISSING: $FILE"
+              exit 1
+            fi
+          done
+
+          echo "MK1 SOURCE VALID"
+
+      - name: Clone ReWolf viewer tools
+        run: |
+          set -e
+
+          git clone \
+            --depth 1 \
+            https://github.com/rwfpl/rewolf-mortal-kombat-viewer.git \
+            viewer-tools/rewolf-mortal-kombat-viewer
+
+          git clone \
+            --depth 1 \
+            https://github.com/rwfpl/rewolf-mortal-kombat.git \
+            viewer-tools/rewolf-mortal-kombat
+
+          echo "TOOLS READY"
+
+      - name: Export real MK1 fighter frames
+        run: |
+          set -e
+
+          python3 <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          from PIL import Image, ImageDraw
+
+          repo = Path("viewer-tools/rewolf-mortal-kombat-viewer").resolve()
+          sys.path.insert(0, str(repo))
+
+          import mkexec
+          import grafile
+          import graph_util
+
+          source = Path("mk1-source")
+          out = Path("exported-assets")
+          out.mkdir(parents=True, exist_ok=True)
+
+          exe_path = source / "MK1.EXE"
+          mk = mkexec.MkExec(str(exe_path))
+
+          if not getattr(mk, "exec_data", None):
+              raise SystemExit("ERROR: FAILED TO LOAD MK1.EXE")
+
+          bundles = [
+              {
+                  "gra": source / "GRAPHICS" / "KANG.GRA",
+                  "dest": out / "Characters" / "LiuKang" / "Idle",
+                  "limit": 18,
+                  "label": "LiuKangIdle",
+              },
+              {
+                  "gra": source / "GRAPHICS" / "LKATT.GRA",
+                  "dest": out / "Characters" / "LiuKang" / "Attack",
+                  "limit": 14,
+                  "label": "LiuKangAttack",
+              },
+              {
+                  "gra": source / "GRAPHICS" / "RAIDEN.GRA",
+                  "dest": out / "Characters" / "Raiden" / "Idle",
+                  "limit": 18,
+                  "label": "RaidenIdle",
+              },
+              {
+                  "gra": source / "GRAPHICS" / "RDATT.GRA",
+                  "dest": out / "Characters" / "Raiden" / "Attack",
+                  "limit": 14,
+                  "label": "RaidenAttack",
+              },
+          ]
+
+          contacts = [
+              {
+                  "gra": source / "GRAPHICS" / "MKTITLE1.GRA",
+                  "output": out / "Backgrounds" / "mk_title_contact.png",
+              },
+              {
+                  "gra": source / "GRAPHICS" / "MISC.GRA",
+                  "output": out / "Backgrounds" / "misc_contact.png",
+              },
+              {
+                  "gra": source / "GRAPHICS" / "FONTS.GRA",
+                  "output": out / "Backgrounds" / "fonts_contact.png",
+              },
+          ]
+
+          def choose_palette(mkobj, sprites):
+              if not sprites:
+                  return None
+
+              max_colors = max(
+                  max(1, getattr(sprite, "number_of_colors", 1))
+                  for sprite in sprites
+              )
+
+              palette_map = mkobj.GetSuitablePalettes(max_colors)
+              if not palette_map:
+                  return None
+
+              key = sorted(palette_map.keys())[0]
+              return palette_map[key]
+
+          def sprite_to_rgba(sprite, palette, canvas_w, canvas_h, scale=3):
+              prepared = graph_util.PreparePalette(palette.colors)
+
+              rgba = bytearray()
+              for idx in sprite.data:
+                  if idx <= 0 or idx >= len(prepared):
+                      rgba.extend((0, 0, 0, 0))
+                  else:
+                      rgb = prepared[idx].tuple()
+                      rgba.extend((rgb[0], rgb[1], rgb[2], 255))
+
+              img = Image.frombytes(
+                  "RGBA",
+                  (sprite.width, sprite.height),
+                  bytes(rgba)
+              )
+
+              canvas = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+
+              x = (canvas_w - sprite.width) // 2
+              y = (canvas_h - sprite.height) // 2
+
+              canvas.alpha_composite(img, (x, y))
+
+              if scale != 1:
+                  canvas = canvas.resize(
+                      (canvas_w * scale, canvas_h * scale),
+                      resample=Image.Resampling.NEAREST
+                  )
+
+              return canvas
+
+          manifest = {}
+
+          for bundle in bundles:
+              gra_path = bundle["gra"]
+              dest = bundle["dest"]
+              dest.mkdir(parents=True, exist_ok=True)
+
+              gra = grafile.GraFile(mk, str(gra_path))
+              sprites = sorted(gra.sprites.values(), key=lambda s: s.offset)
+
+              if not sprites:
+                  raise SystemExit(f"ERROR: NO SPRITES IN {gra_path.name}")
+
+              sprites = sprites[:bundle["limit"]]
+
+              palette = choose_palette(mk, sprites)
+              if palette is None:
+                  raise SystemExit(f"ERROR: NO PALETTE FOR {gra_path.name}")
+
+              max_w = max(sprite.width for sprite in sprites)
+              max_h = max(sprite.height for sprite in sprites)
+
+              written = []
+
+              for index, sprite in enumerate(sprites):
+                  frame = sprite_to_rgba(sprite, palette, max_w, max_h, scale=3)
+                  out_file = dest / f"{index:03d}.png"
+                  frame.save(out_file)
+                  written.append(out_file.name)
+
+              manifest[bundle["label"]] = {
+                  "gra": gra_path.name,
+                  "frame_count": len(written),
+                  "canvas": [max_w * 3, max_h * 3],
+                  "files": written,
+              }
+
+          for item in contacts:
+              gra_path = item["gra"]
+              output = item["output"]
+              output.parent.mkdir(parents=True, exist_ok=True)
+
+              gra = grafile.GraFile(mk, str(gra_path))
+              sprites = sorted(gra.sprites.values(), key=lambda s: s.offset)
+
+              if not sprites:
+                  continue
+
+              sprites = sprites[:min(40, len(sprites))]
+
+              palette = choose_palette(mk, sprites)
+              if palette is None:
+                  continue
+
+              image = graph_util.GetSpritesImage(sprites, palette, max_width=1024)
+              image.save(output)
+
+          info_path = out / "manifest.json"
+          info_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+          required = [
+              ("Characters/LiuKang/Idle", 6),
+              ("Characters/LiuKang/Attack", 4),
+              ("Characters/Raiden/Idle", 6),
+              ("Characters/Raiden/Attack", 4),
+          ]
+
+          for rel, minimum in required:
+              count = len(list((out / rel).glob("*.png")))
+              if count < minimum:
+                  raise SystemExit(f"ERROR: NOT ENOUGH REAL FRAMES IN {rel}: {count}")
+
+          print("REAL MK1 FRAMES EXPORTED")
+          print(info_path)
+          PY
+
+      - name: Show exported assets
+        run: |
+          set -e
+
+          echo "===== EXPORTED ASSETS ====="
+          find exported-assets -type f | sort | head -300
+
+          echo
+          echo "===== MANIFEST ====="
+          cat exported-assets/manifest.json
+
+      - name: Create app structure
+        run: |
+          set -e
+
+          mkdir -p MK1Remastered/Sources
+          mkdir -p MK1Remastered/AppResources
+          mkdir -p MK1Remastered/Assets.xcassets/AppIcon.appiconset
+
+      - name: Copy real assets into app
+        run: |
+          set -e
+
+          mkdir -p MK1Remastered/AppResources/Characters
+          mkdir -p MK1Remastered/AppResources/Backgrounds
+
+          cp -R exported-assets/Characters/. MK1Remastered/AppResources/Characters/
+          cp -R exported-assets/Backgrounds/. MK1Remastered/AppResources/Backgrounds/
+          cp exported-assets/manifest.json MK1Remastered/AppResources/manifest.json
+
+          echo "APP RESOURCES READY"
+
+      - name: Generate app icon
+        run: |
+          set -e
+
+          python3 <<'PY'
+          from PIL import Image, ImageDraw, ImageFont
+          import json
+          import os
+
+          icon_dir = "MK1Remastered/Assets.xcassets/AppIcon.appiconset"
+          os.makedirs(icon_dir, exist_ok=True)
+
+          entries = [
+              ("iphone", "20x20", "2x", 40, "Icon20-2.png"),
+              ("iphone", "20x20", "3x", 60, "Icon20-3.png"),
+              ("iphone", "29x29", "2x", 58, "Icon29-2.png"),
+              ("iphone", "29x29", "3x", 87, "Icon29-3.png"),
+              ("iphone", "40x40", "2x", 80, "Icon40-2.png"),
+              ("iphone", "40x40", "3x", 120, "Icon40-3.png"),
+              ("iphone", "60x60", "2x", 120, "Icon60-2.png"),
+              ("iphone", "60x60", "3x", 180, "Icon60-3.png"),
+              ("ios-marketing", "1024x1024", "1x", 1024, "Icon1024.png"),
+          ]
+
+          def get_font(size):
+              candidates = [
+                  "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+                  "/System/Library/Fonts/Supplemental/Arial.ttf",
+              ]
+              for path in candidates:
+                  if os.path.exists(path):
+                      return ImageFont.truetype(path, size)
+              return ImageFont.load_default()
+
+          def make_icon(px, output):
+              img = Image.new("RGB", (px, px), (8, 8, 10))
+              draw = ImageDraw.Draw(img)
+
+              for y in range(px):
+                  t = y / max(px - 1, 1)
+                  r = int(110 * (1 - t) + 10 * t)
+                  g = int(8 * (1 - t) + 2 * t)
+                  b = int(10 * (1 - t) + 7 * t)
+                  draw.line((0, y, px, y), fill=(r, g, b))
+
+              margin = int(px * 0.10)
+              draw.ellipse(
+                  (margin, margin, px - margin, px - margin),
+                  fill=(12, 12, 16),
+                  outline=(230, 40, 40),
+                  width=max(2, int(px * 0.025))
+              )
+
+              big = get_font(max(12, int(px * 0.24)))
+              small = get_font(max(10, int(px * 0.06)))
+
+              title = "MK1"
+              box = draw.textbbox((0, 0), title, font=big)
+              tw = box[2] - box[0]
+              th = box[3] - box[1]
+
+              draw.text(
+                  ((px - tw) / 2, px * 0.38 - th / 2),
+                  title,
+                  font=big,
+                  fill=(250, 250, 250)
+              )
+
+              subtitle = "REMASTERED"
+              box2 = draw.textbbox((0, 0), subtitle, font=small)
+              sw = box2[2] - box2[0]
+
+              draw.text(
+                  ((px - sw) / 2, px * 0.66),
+                  subtitle,
+                  font=small,
+                  fill=(245, 84, 70)
+              )
+
+              img.save(output, "PNG")
+
+          images = []
+
+          for idiom, size, scale, pixels, filename in entries:
+              output = os.path.join(icon_dir, filename)
+              make_icon(pixels, output)
+              images.append(
+                  {
+                      "idiom": idiom,
+                      "size": size,
+                      "scale": scale,
+                      "filename": filename,
+                  }
+              )
+
+          contents = {
+              "images": images,
+              "info": {"version": 1, "author": "xcode"}
+          }
+
+          with open(os.path.join(icon_dir, "Contents.json"), "w", encoding="utf-8") as f:
+              json.dump(contents, f, indent=2)
+
+          print("ICON READY")
+          PY
+
+      - name: Create project.yml
+        run: |
+          set -e
+
+          cat > MK1Remastered/project.yml <<'EOF'
+          name: MK1Remastered
+
+          options:
+            deploymentTarget:
+              iOS: "15.0"
+            createIntermediateGroups: true
+
+          settings:
+            base:
+              SWIFT_VERSION: 5.0
+              PRODUCT_BUNDLE_IDENTIFIER: com.zhenya.mk1remastered
+              CURRENT_PROJECT_VERSION: 1
+              MARKETING_VERSION: 0.1
+              TARGETED_DEVICE_FAMILY: 1
+
+          targets:
+            MK1Remastered:
+              type: application
+              platform: iOS
+              sources:
+                - path: Sources
+              resources:
+                - path: AppResources
+                - path: Assets.xcassets
+              info:
+                path: Info.plist
+                properties:
+                  CFBundleDisplayName: MK1 Remastered
+                  UILaunchScreen: {}
+                  UIRequiresFullScreen: true
+                  UISupportedInterfaceOrientations:
+                    - UIInterfaceOrientationLandscapeLeft
+                    - UIInterfaceOrientationLandscapeRight
+                  UIApplicationSceneManifest:
+                    UIApplicationSupportsMultipleScenes: false
+              settings:
+                base:
+                  INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.games
+                  ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+                  PRODUCT_NAME: MK1Remastered
+          EOF
+
+      - name: Create Info.plist
+        run: |
+          set -e
+
+          cat > MK1Remastered/Info.plist <<'EOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          </dict>
+          </plist>
+          EOF
+
+      - name: Create Swift sources
+        run: |
+          set -e
+
+          cat > MK1Remastered/Sources/GameMode.swift <<'EOF'
+          import Foundation
+
+          enum GameMode: String, CaseIterable {
+              case classic = "CLASSIC"
+              case remastered = "REMASTERED"
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/GameState.swift <<'EOF'
+          import Foundation
+          import Combine
+
+          final class GameState: ObservableObject {
+              @Published var liuHP: Int = 100
+              @Published var raidenHP: Int = 100
+              @Published var timer: Int = 99
+              @Published var winner: String = ""
+
+              func reset() {
+                  liuHP = 100
+                  raidenHP = 100
+                  timer = 99
+                  winner = ""
+              }
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/GameController.swift <<'EOF'
+          import Foundation
+          import Combine
+
+          final class GameController: ObservableObject {
+              @Published var leftHeld = false
+              @Published var rightHeld = false
+              @Published var blockHeld = false
+
+              @Published var lightPunchToken = 0
+              @Published var highPunchToken = 0
+              @Published var highKickToken = 0
+              @Published var lowKickToken = 0
+              @Published var pauseToken = 0
+
+              func tapLP() { lightPunchToken += 1 }
+              func tapHP() { highPunchToken += 1 }
+              func tapHK() { highKickToken += 1 }
+              func tapLK() { lowKickToken += 1 }
+              func tapPause() { pauseToken += 1 }
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/HoldButton.swift <<'EOF'
+          import SwiftUI
+
+          struct HoldButton: View {
+              let title: String
+              let onPressChanged: (Bool) -> Void
+
+              var body: some View {
+                  Text(title)
+                      .font(.system(size: 16, weight: .black))
+                      .foregroundColor(.white)
+                      .frame(width: 56, height: 56)
+                      .background(Color.black.opacity(0.55))
+                      .overlay(
+                          RoundedRectangle(cornerRadius: 14)
+                              .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                      )
+                      .cornerRadius(14)
+                      .contentShape(Rectangle())
+                      .gesture(
+                          DragGesture(minimumDistance: 0)
+                              .onChanged { _ in
+                                  onPressChanged(true)
+                              }
+                              .onEnded { _ in
+                                  onPressChanged(false)
+                              }
+                      )
+              }
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/GameView.swift <<'EOF'
+          import SwiftUI
+          import SpriteKit
+
+          struct GameView: View {
+              let mode: GameMode
+              @StateObject private var controller = GameController()
+              @StateObject private var gameState = GameState()
+
+              var body: some View {
+                  ZStack {
+                      SpriteKitContainer(
+                          mode: mode,
+                          controller: controller,
+                          gameState: gameState
+                      )
+                      .ignoresSafeArea()
+
+                      VStack {
+                          HStack {
+                              VStack(alignment: .leading, spacing: 4) {
+                                  Text("LIU KANG")
+                                      .font(.system(size: 14, weight: .black))
+                                      .foregroundColor(.white)
+
+                                  ProgressView(value: Double(gameState.liuHP), total: 100)
+                                      .frame(width: 180)
+                                      .tint(.red)
+                              }
+
+                              Spacer()
+
+                              VStack(spacing: 4) {
+                                  Text("\\(gameState.timer)")
+                                      .font(.system(size: 24, weight: .black))
+                                      .foregroundColor(.white)
+
+                                  if !gameState.winner.isEmpty {
+                                      Text(gameState.winner)
+                                          .font(.system(size: 14, weight: .bold))
+                                          .foregroundColor(.yellow)
+                                  }
+                              }
+
+                              Spacer()
+
+                              VStack(alignment: .trailing, spacing: 4) {
+                                  Text("RAIDEN")
+                                      .font(.system(size: 14, weight: .black))
+                                      .foregroundColor(.white)
+
+                                  ProgressView(value: Double(gameState.raidenHP), total: 100)
+                                      .frame(width: 180)
+                                      .tint(.red)
+                              }
+                          }
+                          .padding(.horizontal, 20)
+                          .padding(.top, 8)
+
+                          Spacer()
+
+                          HStack(alignment: .bottom) {
+                              VStack(spacing: 10) {
+                                  HoldButton(title: "◀") { held in
+                                      controller.leftHeld = held
+                                  }
+
+                                  HoldButton(title: "▶") { held in
+                                      controller.rightHeld = held
+                                  }
+                              }
+
+                              Spacer()
+
+                              HStack(spacing: 10) {
+                                  Button("LP") { controller.tapLP() }
+                                  Button("HP") { controller.tapHP() }
+                                  Button("HK") { controller.tapHK() }
+                                  Button("LK") { controller.tapLK() }
+                                  HoldButton(title: "BLK") { held in
+                                      controller.blockHeld = held
+                                  }
+                              }
+                              .buttonStyle(MKButtonStyle())
+                          }
+                          .padding(.horizontal, 20)
+                          .padding(.bottom, 18)
+                      }
+
+                      VStack {
+                          HStack {
+                              Button("PAUSE") {
+                                  controller.tapPause()
+                              }
+                              .buttonStyle(MKButtonStyle(width: 78, height: 34))
+
+                              Spacer()
+
+                              Text(mode.rawValue)
+                                  .font(.system(size: 13, weight: .black))
+                                  .padding(.horizontal, 12)
+                                  .padding(.vertical, 8)
+                                  .background(Color.black.opacity(0.5))
+                                  .foregroundColor(.white)
+                                  .cornerRadius(12)
+                          }
+                          .padding(.horizontal, 14)
+                          .padding(.top, 10)
+
+                          Spacer()
+                      }
+                  }
+                  .background(Color.black)
+                  .onAppear {
+                      gameState.reset()
+                  }
+              }
+          }
+
+          struct MKButtonStyle: ButtonStyle {
+              var width: CGFloat = 56
+              var height: CGFloat = 56
+
+              func makeBody(configuration: Configuration) -> some View {
+                  configuration.label
+                      .font(.system(size: 16, weight: .black))
+                      .foregroundColor(.white)
+                      .frame(width: width, height: height)
+                      .background(Color.black.opacity(configuration.isPressed ? 0.75 : 0.55))
+                      .overlay(
+                          RoundedRectangle(cornerRadius: 14)
+                              .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                      )
+                      .cornerRadius(14)
+              }
+          }
+
+          struct SpriteKitContainer: UIViewRepresentable {
+              let mode: GameMode
+              @ObservedObject var controller: GameController
+              @ObservedObject var gameState: GameState
+
+              func makeUIView(context: Context) -> SKView {
+                  let view = SKView()
+                  view.ignoresSiblingOrder = true
+
+                  let scene = FightScene(
+                      size: CGSize(width: 1334, height: 750),
+                      mode: mode,
+                      controller: controller,
+                      gameState: gameState
+                  )
+
+                  scene.scaleMode = .aspectFill
+                  scene.backgroundColor = .black
+
+                  view.presentScene(scene)
+
+                  context.coordinator.scene = scene
+                  return view
+              }
+
+              func updateUIView(_ uiView: SKView, context: Context) {
+              }
+
+              func makeCoordinator() -> Coordinator {
+                  Coordinator()
+              }
+
+              final class Coordinator {
+                  var scene: FightScene?
+              }
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/FightScene.swift <<'EOF'
+          import Foundation
+          import SpriteKit
+          import SwiftUI
+
+          final class FightScene: SKScene {
+              private let mode: GameMode
+              private let controller: GameController
+              private let gameState: GameState
+
+              private var liuNode = SKSpriteNode()
+              private var raidenNode = SKSpriteNode()
+
+              private var liuIdle: [SKTexture] = []
+              private var liuAttack: [SKTexture] = []
+              private var raidenIdle: [SKTexture] = []
+              private var raidenAttack: [SKTexture] = []
+
+              private var lastLPToken = 0
+              private var lastHPToken = 0
+              private var lastHKToken = 0
+              private var lastLKToken = 0
+              private var lastPauseToken = 0
+
+              private var pausedByUser = false
+              private var lastUpdate: TimeInterval = 0
+              private var aiAttackCooldown: TimeInterval = 0
+              private var timerAccumulator: TimeInterval = 0
+
+              init(size: CGSize, mode: GameMode, controller: GameController, gameState: GameState) {
+                  self.mode = mode
+                  self.controller = controller
+                  self.gameState = gameState
+                  super.init(size: size)
+              }
+
+              required init?(coder aDecoder: NSCoder) {
+                  fatalError("init(coder:) has not been implemented")
+              }
+
+              override func didMove(to view: SKView) {
+                  anchorPoint = CGPoint(x: 0.5, y: 0.5)
+
+                  setupBackground()
+                  loadRealTextures()
+                  setupFighters()
+                  startTimer()
+              }
+
+              private func setupBackground() {
+                  let background = SKSpriteNode(color: SKColor(red: 0.10, green: 0.03, blue: 0.04, alpha: 1.0), size: size)
+                  background.position = .zero
+                  background.zPosition = -100
+                  addChild(background)
+
+                  if let texture = textureNamed("Backgrounds/mk_title_contact.png") {
+                      let bgImage = SKSpriteNode(texture: texture)
+                      bgImage.alpha = 0.18
+                      bgImage.size = CGSize(width: size.width * 0.95, height: size.height * 0.72)
+                      bgImage.position = CGPoint(x: 0, y: 40)
+                      bgImage.zPosition = -90
+                      addChild(bgImage)
+                  }
+
+                  let floor = SKShapeNode(rectOf: CGSize(width: size.width * 1.2, height: 130), cornerRadius: 0)
+                  floor.fillColor = SKColor(red: 0.20, green: 0.04, blue: 0.04, alpha: 1.0)
+                  floor.strokeColor = SKColor(red: 0.35, green: 0.08, blue: 0.08, alpha: 1.0)
+                  floor.position = CGPoint(x: 0, y: -240)
+                  floor.zPosition = -50
+                  addChild(floor)
+
+                  let title = SKLabelNode(text: mode == .remastered ? "MK1 REMASTERED" : "MK1 CLASSIC")
+                  title.fontName = "Helvetica-Bold"
+                  title.fontSize = 24
+                  title.fontColor = .white
+                  title.position = CGPoint(x: 0, y: 300)
+                  title.zPosition = -10
+                  addChild(title)
+              }
+
+              private func textureNamed(_ relative: String) -> SKTexture? {
+                  guard let url = Bundle.main.url(forResource: relative, withExtension: nil) else {
+                      return nil
+                  }
+                  let texture = SKTexture(imageNamed: url.lastPathComponent)
+                  return texture
+              }
+
+              private func textures(in subdirectory: String) -> [SKTexture] {
+                  guard let baseURL = Bundle.main.resourceURL?.appendingPathComponent(subdirectory) else {
+                      return []
+                  }
+
+                  let fm = FileManager.default
+                  guard let files = try? fm.contentsOfDirectory(
+                      at: baseURL,
+                      includingPropertiesForKeys: nil
+                  ) else {
+                      return []
+                  }
+
+                  let sorted = files
+                      .filter { $0.pathExtension.lowercased() == "png" }
+                      .sorted { $0.lastPathComponent < $1.lastPathComponent }
+
+                  let textures = sorted.map { url -> SKTexture in
+                      let texture = SKTexture(imageNamed: url.lastPathComponent)
+                      texture.filteringMode = (mode == .classic ? .nearest : .linear)
+                      return texture
+                  }
+
+                  return textures
+              }
+
+              private func loadRealTextures() {
+                  liuIdle = textures(in: "Characters/LiuKang/Idle")
+                  liuAttack = textures(in: "Characters/LiuKang/Attack")
+                  raidenIdle = textures(in: "Characters/Raiden/Idle")
+                  raidenAttack = textures(in: "Characters/Raiden/Attack")
+
+                  if liuIdle.isEmpty || liuAttack.isEmpty || raidenIdle.isEmpty || raidenAttack.isEmpty {
+                      fatalError("REAL MK1 TEXTURES NOT FOUND")
+                  }
+              }
+
+              private func setupFighters() {
+                  liuNode = SKSpriteNode(texture: liuIdle[0])
+                  raidenNode = SKSpriteNode(texture: raidenIdle[0])
+
+                  liuNode.position = CGPoint(x: -220, y: -120)
+                  raidenNode.position = CGPoint(x: 220, y: -120)
+
+                  liuNode.zPosition = 10
+                  raidenNode.zPosition = 10
+
+                  let baseScale: CGFloat = mode == .remastered ? 1.25 : 1.0
+                  liuNode.setScale(baseScale)
+                  raidenNode.setScale(baseScale)
+
+                  if mode == .remastered {
+                      liuNode.color = .white
+                      liuNode.colorBlendFactor = 0.0
+
+                      raidenNode.color = .white
+                      raidenNode.colorBlendFactor = 0.0
+
+                      liuNode.alpha = 0.98
+                      raidenNode.alpha = 0.98
+                  }
+
+                  addChild(liuNode)
+                  addChild(raidenNode)
+
+                  startIdle(node: liuNode, textures: liuIdle)
+                  startIdle(node: raidenNode, textures: raidenIdle)
+              }
+
+              private func startIdle(node: SKSpriteNode, textures: [SKTexture]) {
+                  node.removeAction(forKey: "idle")
+
+                  let action = SKAction.repeatForever(
+                      SKAction.animate(with: textures, timePerFrame: 0.09, resize: false, restore: true)
+                  )
+
+                  node.run(action, withKey: "idle")
+              }
+
+              private func playAttack(node: SKSpriteNode, attackTextures: [SKTexture], idleTextures: [SKTexture], onHit: @escaping () -> Void) {
+                  node.removeAction(forKey: "idle")
+
+                  let attack = SKAction.animate(with: attackTextures, timePerFrame: 0.06, resize: false, restore: false)
+                  let hit = SKAction.run(onHit)
+                  let restart = SKAction.run { [weak self] in
+                      self?.startIdle(node: node, textures: idleTextures)
+                  }
+
+                  node.run(SKAction.sequence([attack, hit, restart]), withKey: "attack")
+              }
+
+              private func startTimer() {
+                  gameState.timer = 99
+              }
+
+              override func update(_ currentTime: TimeInterval) {
+                  let delta = lastUpdate == 0 ? 0 : (currentTime - lastUpdate)
+                  lastUpdate = currentTime
+
+                  if lastPauseToken != controller.pauseToken {
+                      lastPauseToken = controller.pauseToken
+                      pausedByUser.toggle()
+                  }
+
+                  if pausedByUser || !gameState.winner.isEmpty {
+                      return
+                  }
+
+                  processTimer(delta: delta)
+                  processPlayerMovement(delta: delta)
+                  processPlayerAttacks()
+                  processSimpleAI(delta: delta)
+                  clampFighters()
+                  checkWinner()
+              }
+
+              private func processTimer(delta: TimeInterval) {
+                  timerAccumulator += delta
+                  if timerAccumulator >= 1.0 {
+                      timerAccumulator = 0
+                      if gameState.timer > 0 {
+                          gameState.timer -= 1
+                      }
+                  }
+              }
+
+              private func processPlayerMovement(delta: TimeInterval) {
+                  let speed: CGFloat = mode == .remastered ? 180 : 150
+                  let dx = CGFloat(delta) * speed
+
+                  if controller.leftHeld {
+                      liuNode.position.x -= dx
+                  }
+
+                  if controller.rightHeld {
+                      liuNode.position.x += dx
+                  }
+              }
+
+              private func processPlayerAttacks() {
+                  if lastLPToken != controller.lightPunchToken {
+                      lastLPToken = controller.lightPunchToken
+                      playAttack(node: liuNode, attackTextures: liuAttack, idleTextures: liuIdle) { [weak self] in
+                          self?.dealDamageToRaiden(6)
+                      }
+                  }
+
+                  if lastHPToken != controller.highPunchToken {
+                      lastHPToken = controller.highPunchToken
+                      playAttack(node: liuNode, attackTextures: liuAttack, idleTextures: liuIdle) { [weak self] in
+                          self?.dealDamageToRaiden(8)
+                      }
+                  }
+
+                  if lastHKToken != controller.highKickToken {
+                      lastHKToken = controller.highKickToken
+                      playAttack(node: liuNode, attackTextures: liuAttack, idleTextures: liuIdle) { [weak self] in
+                          self?.dealDamageToRaiden(9)
+                      }
+                  }
+
+                  if lastLKToken != controller.lowKickToken {
+                      lastLKToken = controller.lowKickToken
+                      playAttack(node: liuNode, attackTextures: liuAttack, idleTextures: liuIdle) { [weak self] in
+                          self?.dealDamageToRaiden(5)
+                      }
+                  }
+              }
+
+              private func processSimpleAI(delta: TimeInterval) {
+                  aiAttackCooldown -= delta
+
+                  let distance = liuNode.position.x - raidenNode.position.x
+
+                  if abs(distance) > 130 {
+                      raidenNode.position.x += distance > 0 ? 60 * CGFloat(delta) : -60 * CGFloat(delta)
+                  } else if aiAttackCooldown <= 0 {
+                      aiAttackCooldown = 1.6
+                      playAttack(node: raidenNode, attackTextures: raidenAttack, idleTextures: raidenIdle) { [weak self] in
+                          self?.dealDamageToLiu(controller.blockHeld ? 2 : 7)
+                      }
+                  }
+              }
+
+              private func clampFighters() {
+                  let minX: CGFloat = -440
+                  let maxX: CGFloat = 440
+
+                  liuNode.position.x = min(max(liuNode.position.x, minX), maxX)
+                  raidenNode.position.x = min(max(raidenNode.position.x, minX), maxX)
+              }
+
+              private func dealDamageToRaiden(_ base: Int) {
+                  let distance = abs(liuNode.position.x - raidenNode.position.x)
+                  guard distance < 170 else { return }
+
+                  let damage = max(1, base)
+                  gameState.raidenHP = max(0, gameState.raidenHP - damage)
+              }
+
+              private func dealDamageToLiu(_ base: Int) {
+                  let distance = abs(liuNode.position.x - raidenNode.position.x)
+                  guard distance < 170 else { return }
+
+                  let reduced = controller.blockHeld ? max(1, base / 3) : base
+                  gameState.liuHP = max(0, gameState.liuHP - reduced)
+              }
+
+              private func checkWinner() {
+                  if gameState.raidenHP <= 0 {
+                      gameState.winner = "LIU KANG WINS"
+                  } else if gameState.liuHP <= 0 {
+                      gameState.winner = "RAIDEN WINS"
+                  } else if gameState.timer <= 0 {
+                      if gameState.liuHP > gameState.raidenHP {
+                          gameState.winner = "LIU KANG WINS"
+                      } else if gameState.raidenHP > gameState.liuHP {
+                          gameState.winner = "RAIDEN WINS"
+                      } else {
+                          gameState.winner = "DRAW"
+                      }
+                  }
+              }
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/ContentView.swift <<'EOF'
+          import SwiftUI
+
+          struct ContentView: View {
+              @State private var selectedMode: GameMode? = nil
+
+              var body: some View {
+                  Group {
+                      if let mode = selectedMode {
+                          GameView(mode: mode)
+                      } else {
+                          ZStack {
+                              LinearGradient(
+                                  colors: [
+                                      Color(red: 0.18, green: 0.02, blue: 0.03),
+                                      Color.black
+                                  ],
+                                  startPoint: .top,
+                                  endPoint: .bottom
+                              )
+                              .ignoresSafeArea()
+
+                              VStack(spacing: 18) {
+                                  Text("MORTAL KOMBAT")
+                                      .font(.system(size: 38, weight: .black))
+                                      .foregroundColor(.white)
+
+                                  Text("MK1 REMASTERED PROTOTYPE")
+                                      .font(.system(size: 16, weight: .bold))
+                                      .foregroundColor(Color(red: 1.0, green: 0.35, blue: 0.30))
+
+                                  Text("CHOOSE MODE")
+                                      .font(.system(size: 14, weight: .bold))
+                                      .foregroundColor(.white.opacity(0.8))
+                                      .padding(.top, 10)
+
+                                  Button("CLASSIC") {
+                                      selectedMode = .classic
+                                  }
+                                  .buttonStyle(MenuButtonStyle())
+
+                                  Button("REMASTERED") {
+                                      selectedMode = .remastered
+                                  }
+                                  .buttonStyle(MenuButtonStyle())
+
+                                  Text("REAL MK1 FIGHTER FRAMES")
+                                      .font(.system(size: 12, weight: .bold))
+                                      .foregroundColor(.white.opacity(0.75))
+                                      .padding(.top, 8)
+                              }
+                              .padding(30)
+                          }
+                      }
+                  }
+              }
+          }
+
+          struct MenuButtonStyle: ButtonStyle {
+              func makeBody(configuration: Configuration) -> some View {
+                  configuration.label
+                      .font(.system(size: 20, weight: .black))
+                      .foregroundColor(.white)
+                      .frame(width: 280, height: 54)
+                      .background(Color(red: 0.40, green: 0.03, blue: 0.04))
+                      .overlay(
+                          RoundedRectangle(cornerRadius: 14)
+                              .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                      )
+                      .cornerRadius(14)
+                      .scaleEffect(configuration.isPressed ? 0.98 : 1.0)
+              }
+          }
+          EOF
+
+          cat > MK1Remastered/Sources/MK1RemasteredApp.swift <<'EOF'
+          import SwiftUI
+
+          @main
+          struct MK1RemasteredApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      ContentView()
+                  }
+              }
+          }
+          EOF
+
+      - name: Generate Xcode project
+        run: |
+          set -e
+
+          cd MK1Remastered
+          xcodegen generate
+
+      - name: Build app
+        run: |
+          set +e
+          set -o pipefail
+
+          xcodebuild \
+            -project MK1Remastered/MK1Remastered.xcodeproj \
+            -scheme MK1Remastered \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build \
+            2>&1 | tee output/xcodebuild.log
+
+          STATUS=${PIPESTATUS[0]}
+
+          echo
+          echo "===== COMPILER ERRORS ====="
+          grep -n -E "error:|fatal error:" output/xcodebuild.log | tail -120 || true
+
+          if [ "$STATUS" -ne 0 ]; then
+            exit "$STATUS"
+          fi
+
+      - name: Locate built app
+        run: |
+          set -e
+
+          APP=$(
+            find build/Build/Products \
+              -type d \
+              -name "MK1Remastered.app" \
+              | head -1
+          )
+
+          if [ -z "$APP" ]; then
+            echo "ERROR: APP NOT FOUND"
+            exit 1
+          fi
+
+          echo "$APP" > output/app-path.txt
+          echo "APP=$APP"
+
+      - name: Create build info
+        run: |
+          set -e
+
+          APP=$(cat output/app-path.txt)
+
+          {
+            echo "========================================"
+            echo "MK1 REMASTERED PROTOTYPE"
+            echo "========================================"
+            echo
+            echo "REAL ASSET BUILD"
+            echo
+            echo "FEATURES:"
+            echo "- REAL LIU KANG FRAMES"
+            echo "- REAL RAIDEN FRAMES"
+            echo "- REAL MK1 GRA EXPORT"
+            echo "- CLASSIC MODE"
+            echo "- REMASTERED MODE"
+            echo "- HUD"
+            echo "- TIMER"
+            echo "- HP BARS"
+            echo "- TOUCH CONTROLS"
+            echo "- LP / HP / HK / LK / BLOCK"
+            echo "- SIMPLE AI"
+            echo
+            echo "APP:"
+            echo "$APP"
+            echo
+            echo "EXPORTED COUNTS:"
+            echo "LIU_IDLE=$(find exported-assets/Characters/LiuKang/Idle -type f -name '*.png' | wc -l | tr -d ' ')"
+            echo "LIU_ATTACK=$(find exported-assets/Characters/LiuKang/Attack -type f -name '*.png' | wc -l | tr -d ' ')"
+            echo "RAIDEN_IDLE=$(find exported-assets/Characters/Raiden/Idle -type f -name '*.png' | wc -l | tr -d ' ')"
+            echo "RAIDEN_ATTACK=$(find exported-assets/Characters/Raiden/Attack -type f -name '*.png' | wc -l | tr -d ' ')"
+          } > output/BUILD-INFO.txt
+
+          cat output/BUILD-INFO.txt
+
+      - name: Create IPA
+        run: |
+          set -e
+
+          APP=$(cat output/app-path.txt)
+
+          rm -rf Payload
+          mkdir -p Payload
+
+          cp -R "$APP" Payload/
+
+          ditto \
+            -c \
+            -k \
+            --sequesterRsrc \
+            --keepParent \
+            Payload \
+            output/MK1-Remastered-REAL.ipa
+
+          ls -lh output/MK1-Remastered-REAL.ipa
+
+      - name: Upload successful artifact
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-Remastered-REAL
+          path: |
+            output/MK1-Remastered-REAL.ipa
+            output/BUILD-INFO.txt
+            exported-assets/manifest.json
+            exported-assets/Characters
+            exported-assets/Backgrounds
+          compression-level: 0
+
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-Remastered-FAIL
+          path: |
+            output/xcodebuild.log
+            output/BUILD-INFO.txt
+            output/app-path.txt
+            exported-assets/manifest.json
+          if-no-files-found: ignore
