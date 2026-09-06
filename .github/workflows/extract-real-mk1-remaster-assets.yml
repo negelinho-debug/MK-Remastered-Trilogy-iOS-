@@ -1,0 +1,552 @@
+name: Extract REAL MK1 Remaster Assets
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  extract:
+    runs-on: macos-latest
+    timeout-minutes: 60
+
+    steps:
+
+      # ==========================================================
+      # CHECKOUT
+      # ==========================================================
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ==========================================================
+      # TOOLS
+      # ==========================================================
+
+      - name: Install tools
+        run: |
+          set -e
+
+          brew install innoextract p7zip
+
+          python3 -m pip install \
+            --break-system-packages pillow || \
+          python3 -m pip install \
+            --user pillow
+
+          echo "===== XCODE ====="
+          xcodebuild -version || true
+
+          echo "===== INNOEXTRACT ====="
+          innoextract --version
+
+          echo "===== 7Z ====="
+          7z | head -5 || true
+
+      # ==========================================================
+      # PREPARE
+      # ==========================================================
+
+      - name: Prepare folders
+        run: |
+          set -e
+
+          rm -rf raw-installers
+          rm -rf installers
+          rm -rf release-files
+          rm -rf extracted
+          rm -rf mk1-source
+          rm -rf remaster-assets
+          rm -rf output
+
+          mkdir -p raw-installers
+          mkdir -p installers
+          mkdir -p release-files
+          mkdir -p extracted
+          mkdir -p mk1-source
+          mkdir -p remaster-assets/raw
+          mkdir -p remaster-assets/graphics
+          mkdir -p remaster-assets/audio
+          mkdir -p remaster-assets/music
+          mkdir -p remaster-assets/other
+          mkdir -p output
+
+      # ==========================================================
+      # COLLECT INSTALLERS FROM REPOSITORY
+      # ==========================================================
+
+      - name: Collect installers from repository
+        run: |
+          set -e
+
+          COUNT=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            COUNT=$((COUNT + 1))
+
+            echo "FOUND REPO INSTALLER:"
+            echo "$FILE"
+
+            cp "$FILE" "raw-installers/repo_${COUNT}.exe"
+
+          done < <(
+            find . \
+              -type f \
+              \( -iname "*.exe" -o -iname "*.EXE" \) \
+              -not -path "./.git/*" \
+              -not -path "./raw-installers/*" \
+              -not -path "./installers/*" \
+              -not -path "./release-files/*" \
+              -not -path "./extracted/*" \
+              -not -path "./mk1-source/*" \
+              -not -path "./remaster-assets/*" \
+              -not -path "./output/*" \
+              | sort
+          )
+
+          echo
+          echo "===== RAW INSTALLERS FROM REPO ====="
+          ls -lh raw-installers || true
+
+      # ==========================================================
+      # COLLECT INSTALLERS FROM LATEST RELEASE
+      # ==========================================================
+
+      - name: Download installers from latest Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+
+          echo "===== RELEASE LIST ====="
+          gh release list
+
+          TAG=$(
+            gh release list \
+              --limit 1 \
+              --json tagName \
+              --jq '.[0].tagName'
+          )
+
+          echo "LATEST TAG:"
+          echo "$TAG"
+
+          if [ -n "$TAG" ]; then
+            gh release download "$TAG" \
+              --dir release-files \
+              --pattern "*.exe"
+          fi
+
+          N=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            N=$((N + 1))
+
+            echo "FOUND RELEASE INSTALLER:"
+            echo "$FILE"
+
+            cp "$FILE" "raw-installers/release_${N}.exe"
+
+          done < <(
+            find release-files \
+              -type f \
+              \( -iname "*.exe" -o -iname "*.EXE" \) \
+              | sort
+          )
+
+          echo
+          echo "===== ALL RAW INSTALLERS ====="
+          ls -lh raw-installers || true
+
+          exit 0
+
+      # ==========================================================
+      # DEDUPLICATE
+      # ==========================================================
+
+      - name: Deduplicate installers
+        run: |
+          set -e
+
+          FOUND=0
+
+          for FILE in raw-installers/*.exe; do
+            [ -f "$FILE" ] || continue
+
+            FOUND=1
+
+            HASH=$(
+              shasum -a 256 "$FILE" | awk '{print $1}'
+            )
+
+            DEST="installers/${HASH}.exe"
+
+            if [ ! -f "$DEST" ]; then
+              cp "$FILE" "$DEST"
+            fi
+          done
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: NO INSTALLERS FOUND"
+            exit 1
+          fi
+
+          echo
+          echo "===== UNIQUE INSTALLERS ====="
+          ls -lh installers
+
+      # ==========================================================
+      # EXTRACT ALL INSTALLERS
+      # ==========================================================
+
+      - name: Extract installers
+        run: |
+          set -e
+
+          INDEX=0
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            INDEX=$((INDEX + 1))
+            DEST="extracted/pkg${INDEX}"
+
+            mkdir -p "$DEST"
+
+            echo
+            echo "======================================"
+            echo "EXTRACTING:"
+            echo "$FILE"
+            echo "TO:"
+            echo "$DEST"
+            echo "======================================"
+
+            set +e
+
+            innoextract \
+              --extract \
+              --output-dir "$DEST" \
+              "$FILE"
+
+            STATUS=$?
+
+            if [ "$STATUS" -ne 0 ]; then
+              echo "innoextract failed, trying 7z..."
+
+              7z x \
+                "$FILE" \
+                "-o$DEST" \
+                -y
+            fi
+
+            set -e
+
+          done < <(
+            find installers \
+              -type f \
+              -iname "*.exe" \
+              | sort
+          )
+
+          echo
+          echo "===== SEARCHING FOR MK1.EXE ====="
+
+          find extracted \
+            -type f \
+            -iname "MK1.EXE" \
+            -print || true
+
+      # ==========================================================
+      # LOCATE REAL MK1
+      # ==========================================================
+
+      - name: Locate real MK1 source folder
+        run: |
+          set -e
+
+          MK1_EXE=$(
+            find extracted \
+              -type f \
+              -iname "MK1.EXE" \
+              -not -path "*/__support/*" \
+              | head -1
+          )
+
+          echo "MK1_EXE=$MK1_EXE"
+
+          if [ -z "$MK1_EXE" ]; then
+            echo "ERROR: REAL MK1.EXE NOT FOUND"
+            exit 1
+          fi
+
+          MK1_DIR="$(dirname "$MK1_EXE")"
+
+          echo "MK1_DIR=$MK1_DIR"
+
+          echo "$MK1_EXE" > output/mk1-exe.txt
+          echo "$MK1_DIR" > output/mk1-dir.txt
+
+          rm -rf mk1-source
+          mkdir -p mk1-source
+
+          cp -R "$MK1_DIR"/. mk1-source/
+
+          echo
+          echo "===== MK1 SOURCE ROOT ====="
+          find mk1-source -maxdepth 2 | sort | head -300
+
+      # ==========================================================
+      # VALIDATE SOURCE
+      # ==========================================================
+
+      - name: Validate MK1 source
+        run: |
+          set -e
+
+          if [ ! -f "mk1-source/MK1.EXE" ] && [ ! -f "mk1-source/mk1.exe" ]; then
+            echo "ERROR: MK1.EXE NOT IN NORMALIZED FOLDER"
+            exit 1
+          fi
+
+          echo "===== FILE COUNTS ====="
+          echo "ALL FILES: $(find mk1-source -type f | wc -l | tr -d ' ')"
+          echo "GRA FILES: $(find mk1-source -type f -iname "*.gra" | wc -l | tr -d ' ')"
+          echo "PAL FILES: $(find mk1-source -type f -iname "*.pal" | wc -l | tr -d ' ')"
+          echo "PCX FILES: $(find mk1-source -type f -iname "*.pcx" | wc -l | tr -d ' ')"
+          echo "BMP FILES: $(find mk1-source -type f -iname "*.bmp" | wc -l | tr -d ' ')"
+          echo "VOC FILES: $(find mk1-source -type f -iname "*.voc" | wc -l | tr -d ' ')"
+          echo "MID/XMI FILES: $(find mk1-source -type f \( -iname "*.mid" -o -iname "*.xmi" \) | wc -l | tr -d ' ')"
+
+      # ==========================================================
+      # BUILD MANIFESTS
+      # ==========================================================
+
+      - name: Create file manifests
+        run: |
+          set -e
+
+          find mk1-source \
+            -type f \
+            | sed 's#^mk1-source/##' \
+            | sort \
+            > output/all-files.txt
+
+          find mk1-source \
+            -type f \
+            \( \
+              -iname "*.gra" \
+              -o -iname "*.pal" \
+              -o -iname "*.pcx" \
+              -o -iname "*.bmp" \
+              -o -iname "*.fnt" \
+              -o -iname "*.dat" \
+              -o -iname "*.tab" \
+              -o -iname "*.map" \
+            \) \
+            | sed 's#^mk1-source/##' \
+            | sort \
+            > output/graphics-files.txt
+
+          find mk1-source \
+            -type f \
+            \( \
+              -iname "*.voc" \
+              -o -iname "*.wav" \
+              -o -iname "*.snd" \
+            \) \
+            | sed 's#^mk1-source/##' \
+            | sort \
+            > output/audio-files.txt
+
+          find mk1-source \
+            -type f \
+            \( \
+              -iname "*.mid" \
+              -o -iname "*.midi" \
+              -o -iname "*.xmi" \
+            \) \
+            | sed 's#^mk1-source/##' \
+            | sort \
+            > output/music-files.txt
+
+          echo "===== ALL FILES SAMPLE ====="
+          head -100 output/all-files.txt || true
+
+          echo
+          echo "===== GRAPHICS FILES SAMPLE ====="
+          head -100 output/graphics-files.txt || true
+
+      # ==========================================================
+      # COPY RAW REMASTER ASSETS
+      # ==========================================================
+
+      - name: Collect raw remaster assets
+        run: |
+          set -e
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            SRC="mk1-source/$FILE"
+            NAME="$(basename "$FILE")"
+
+            cp "$SRC" "remaster-assets/raw/$NAME"
+
+          done < output/graphics-files.txt
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            SRC="mk1-source/$FILE"
+            NAME="$(basename "$FILE")"
+
+            cp "$SRC" "remaster-assets/audio/$NAME"
+
+          done < output/audio-files.txt
+
+          while IFS= read -r FILE; do
+            [ -z "$FILE" ] && continue
+
+            SRC="mk1-source/$FILE"
+            NAME="$(basename "$FILE")"
+
+            cp "$SRC" "remaster-assets/music/$NAME"
+
+          done < output/music-files.txt
+
+          echo "===== REMASTER-ASSETS COUNTS ====="
+          echo "RAW GRAPHICS-LIKE FILES: $(find remaster-assets/raw -type f | wc -l | tr -d ' ')"
+          echo "AUDIO FILES: $(find remaster-assets/audio -type f | wc -l | tr -d ' ')"
+          echo "MUSIC FILES: $(find remaster-assets/music -type f | wc -l | tr -d ' ')"
+
+      # ==========================================================
+      # EXPORT ANY NATIVE IMAGE FILES (NO CUBES)
+      # ==========================================================
+
+      - name: Export directly available images
+        run: |
+          set -e
+
+          python3 <<'PY'
+          from pathlib import Path
+          import shutil
+
+          src = Path("mk1-source")
+          out = Path("remaster-assets/graphics")
+          out.mkdir(parents=True, exist_ok=True)
+
+          count = 0
+
+          for path in src.rglob("*"):
+              if not path.is_file():
+                  continue
+
+              if path.suffix.lower() not in [".bmp", ".pcx", ".png", ".gif", ".jpg", ".jpeg"]:
+                  continue
+
+              count += 1
+
+              target = out / path.name
+              if target.exists():
+                  target = out / f"{count:04d}_{path.name}"
+
+              shutil.copy2(path, target)
+
+          print("DIRECT_IMAGE_EXPORT_COUNT =", count)
+          PY
+
+          echo "===== DIRECT IMAGES ====="
+          find remaster-assets/graphics -type f | sort | head -200 || true
+
+      # ==========================================================
+      # FAIL IF NOTHING REAL WAS FOUND
+      # ==========================================================
+
+      - name: Check that real graphics assets exist
+        run: |
+          set -e
+
+          GRA_COUNT=$(
+            find mk1-source \
+              -type f \
+              -iname "*.gra" \
+              | wc -l \
+              | tr -d ' '
+          )
+
+          DIRECT_IMAGE_COUNT=$(
+            find remaster-assets/graphics \
+              -type f \
+              | wc -l \
+              | tr -d ' '
+          )
+
+          echo "GRA_COUNT=$GRA_COUNT"
+          echo "DIRECT_IMAGE_COUNT=$DIRECT_IMAGE_COUNT"
+
+          if [ "$GRA_COUNT" -eq 0 ] && [ "$DIRECT_IMAGE_COUNT" -eq 0 ]; then
+            echo "ERROR: NO REAL GRAPHICS ASSETS FOUND"
+            exit 1
+          fi
+
+      # ==========================================================
+      # MAKE INFO FILE
+      # ==========================================================
+
+      - name: Create summary
+        run: |
+          set -e
+
+          {
+            echo "========================================"
+            echo "REAL MK1 REMASTER ASSET EXTRACTION"
+            echo "========================================"
+            echo
+            echo "NORMALIZED SOURCE READY"
+            echo
+            echo "COUNTS:"
+            echo "ALL FILES=$(find mk1-source -type f | wc -l | tr -d ' ')"
+            echo "GRA=$(find mk1-source -type f -iname "*.gra" | wc -l | tr -d ' ')"
+            echo "PAL=$(find mk1-source -type f -iname "*.pal" | wc -l | tr -d ' ')"
+            echo "PCX=$(find mk1-source -type f -iname "*.pcx" | wc -l | tr -d ' ')"
+            echo "BMP=$(find mk1-source -type f -iname "*.bmp" | wc -l | tr -d ' ')"
+            echo "VOC=$(find mk1-source -type f -iname "*.voc" | wc -l | tr -d ' ')"
+            echo "MID_XMI=$(find mk1-source -type f \( -iname "*.mid" -o -iname "*.xmi" \) | wc -l | tr -d ' ')"
+            echo
+            echo "REMaster RAW:"
+            echo "RAW_GRAPHICS=$(find remaster-assets/raw -type f | wc -l | tr -d ' ')"
+            echo "DIRECT_IMAGES=$(find remaster-assets/graphics -type f | wc -l | tr -d ' ')"
+            echo "AUDIO=$(find remaster-assets/audio -type f | wc -l | tr -d ' ')"
+            echo "MUSIC=$(find remaster-assets/music -type f | wc -l | tr -d ' ')"
+            echo
+            echo "THIS BUILD USES REAL MK1 FILES ONLY"
+            echo "NO CUBES"
+            echo "NO PLACEHOLDER SPRITES"
+          } > output/BUILD-INFO.txt
+
+          cat output/BUILD-INFO.txt
+
+      # ==========================================================
+      # UPLOAD ARTIFACTS
+      # ==========================================================
+
+      - name: Upload extracted MK1 remaster assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: MK1-REAL-REMASTER-ASSETS
+          path: |
+            mk1-source
+            remaster-assets
+            output/BUILD-INFO.txt
+            output/all-files.txt
+            output/graphics-files.txt
+            output/audio-files.txt
+            output/music-files.txt
+            output/mk1-exe.txt
+            output/mk1-dir.txt
+          compression-level: 0
