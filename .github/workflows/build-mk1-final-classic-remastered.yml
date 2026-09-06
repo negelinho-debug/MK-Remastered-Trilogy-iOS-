@@ -1,4 +1,4 @@
-name: Build MK1 v0.9.1 Stable Classic + Remastered
+name: Build MK1 v0.9.1b Stable Fix Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -554,112 +554,65 @@ jobs:
                   1
               )
 
-          # Do not override scaleScreenViewToSize geometry.
-          # Use iDOS native 16:10 scaling through putScreen().
+          # Stable fullscreen patch.
+          # v0.9.1 used a whole-method regex and failed before compilation.
+          # Here we only insert a small block into the EXISTING native
+          # updateScreen method, using two simple source markers.
           if "MKSTABLE_NATIVE_FULLSCREEN" not in text:
-              update_pattern = re.compile(
-                  r'-\(void\)updateScreen\s*\{.*?\n\}\n- \(void\)toggleScreenSize',
-                  re.S
+              method_start = text.find("-(void)updateScreen")
+
+              if method_start < 0:
+                  raise SystemExit("ERROR: updateScreen SIGNATURE NOT FOUND")
+
+              toggle_start = text.find(
+                  "- (void)toggleScreenSize",
+                  method_start
               )
 
-              update_match = update_pattern.search(text)
-              if not update_match:
-                  raise SystemExit("ERROR: updateScreen METHOD NOT FOUND")
+              view_marker = "CGRect viewRect = _rootContainer.bounds;"
+              view_pos = text.find(
+                  view_marker,
+                  method_start
+              )
 
-              stable_update = r'''-(void)updateScreen
-          {
-          CGRect viewRect = _rootContainer.bounds;
+              if (
+                  toggle_start < 0
+                  or view_pos < 0
+                  or view_pos > toggle_start
+              ):
+                  raise SystemExit(
+                      "ERROR: updateScreen BODY MARKER NOT FOUND"
+                  )
+
+              insert_pos = view_pos + len(view_marker)
+
+              stable_insert = r'''
 
           // MKSTABLE_NATIVE_FULLSCREEN
-          // MK1 DOS is 320x200 = 16:10.
           NSString *mkMode =
-          [NSUserDefaults.standardUserDefaults stringForKey:@"MKRenderMode"];
+              [NSUserDefaults.standardUserDefaults
+               stringForKey:@"MKRenderMode"];
 
           if (mkMode.length > 0 && !_currentScene.isPortrait)
           {
-          [self putScreen:viewRect
-              scaleMode:DPScreenScaleModeAspectFit16x10];
-          return;
-          }
-
-          if (_currentScene.isPortrait)
-          {
-          [self fillScreen:_screenRect];
-          }
-          else
-          {
-          if (shouldShrinkScreen)
-          {
-            if (ISIPAD()) {
-                viewRect.size.height -= 250;
-                [self putScreen:viewRect scaleMode:[DPSettings shared].screenScaleMode];
-            } else {
-                [self putScreen:viewRect scaleMode:DPScreenScaleModeAspectFit4x3];
-            }
-          }
-          else
-          {
-            [self putScreen:viewRect scaleMode:[DPSettings shared].screenScaleMode];
-          }
-          }
-          }
-          - (void)toggleScreenSize'''
-
-              text = (
-                  text[:update_match.start()]
-                  + stable_update
-                  + text[update_match.end():]
-              )
-
-          # Keep native size/center. Change only the final filter.
-          if "MKSTABLE_FILTER" not in text:
-              filter_pattern = re.compile(
-                  r'(- \(void\)scaleScreenViewToSize:\(CGSize\)size center:\(CGPoint\)center\s*\{.*?self\.screenView\.center\s*=\s*CGPointMake\(center\.x,\s*center\.y\);)(.*?)(\n\})',
-                  re.S
-              )
-
-              filter_match = filter_pattern.search(text)
-              if not filter_match:
-                  raise SystemExit("ERROR: scaleScreenViewToSize METHOD NOT FOUND")
-
-              filter_code = r'''
-
-          // MKSTABLE_FILTER
-          NSString *mkFilterMode =
-          [NSUserDefaults.standardUserDefaults stringForKey:@"MKRenderMode"];
-
-          if (mkFilterMode.length > 0)
-          {
-          BOOL remastered =
-            [mkFilterMode isEqualToString:@"REMASTERED"];
-
-          self.screenView.layer.magnificationFilter =
-            remastered ? kCAFilterLinear : kCAFilterNearest;
-
-          self.screenView.layer.minificationFilter =
-            remastered ? kCAFilterLinear : kCAFilterNearest;
-
-          self.screenView.layer.shouldRasterize = !remastered;
-          }
-          else
-          {
-          if ([DPSettings shared].pixelatedScaling) {
-            self.screenView.layer.magnificationFilter = kCAFilterNearest;
-            self.screenView.layer.shouldRasterize = YES;
-          } else {
-            self.screenView.layer.magnificationFilter = kCAFilterLinear;
-            self.screenView.layer.shouldRasterize = NO;
-          }
+              // Use iDOS's own scaling/centering code, but fill the
+              // complete available landscape area.
+              [self fillScreen:viewRect];
+              return;
           }
           '''
 
               text = (
-                  text[:filter_match.start()]
-                  + filter_match.group(1)
-                  + filter_code
-                  + filter_match.group(3)
-                  + text[filter_match.end():]
+                  text[:insert_pos]
+                  + stable_insert
+                  + text[insert_pos:]
               )
+
+          # IMPORTANT:
+          # Do not patch scaleScreenViewToSize in this stable revision.
+          # That removes another fragile regex and keeps native iDOS
+          # screen geometry untouched. CLASSIC vs REMASTERED stays in
+          # DOSBox configs: scaler=none vs scaler=hq2x.
 
           if "MKSTABLE_GAME_UI" not in text:
               marker = '// MARK: DPGamepadDelegate'
@@ -1188,17 +1141,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9.1-STABLE-KSign.ipa
+            output/MK1-v0.9.1b-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.9.1-STABLE-KSign.ipa
+          ls -lh output/MK1-v0.9.1b-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.9.1 Stable
+      - name: Upload MK1 v0.9.1b Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1-STABLE-KSign
+          name: MK1-v0.9.1b-STABLE-KSign
           path: |
-            output/MK1-v0.9.1-STABLE-KSign.ipa
+            output/MK1-v0.9.1b-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
