@@ -1,4 +1,4 @@
-name: Build FINAL MK1 Classic + Remastered
+name: Build MK1 v0.9 Real Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -150,6 +150,70 @@ jobs:
           git clone --depth 1 https://github.com/litchie/dospad.git dospad
           xcodebuild -project dospad/dospad.xcodeproj -list
 
+      - name: Patch real DOSBox render FPS counter
+        run: |
+          set -e
+
+          RENDER_CPP=$(find dospad -type f -path "*/src/gui/render.cpp" | head -1)
+
+          if [ -z "$RENDER_CPP" ]; then
+            echo "ERROR: DOSBOX render.cpp NOT FOUND"
+            exit 1
+          fi
+
+          echo "RENDER_CPP=$RENDER_CPP"
+
+          python3 - "$RENDER_CPP" <<'PY'
+          from pathlib import Path
+          import re
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8", errors="ignore")
+
+          if "MK_REAL_RENDER_FPS" in text:
+              raise SystemExit(0)
+
+          pattern = re.compile(
+              r"void\s+RENDER_EndUpdate\s*\(\s*bool\s+abort\s*\)\s*\{"
+          )
+
+          match = pattern.search(text)
+          if not match:
+              raise SystemExit("ERROR: RENDER_EndUpdate(bool abort) NOT FOUND")
+
+          bridge = r'''
+
+          // ======================================================
+          // MK_REAL_RENDER_FPS
+          // Counts completed DOSBox render frames, not iOS UI Hz.
+          // ======================================================
+          static volatile unsigned long mk_real_render_frame_counter = 0;
+
+          extern "C" unsigned long MKRenderFrameCounter(void)
+          {
+              return mk_real_render_frame_counter;
+          }
+
+          '''
+
+          text = text[:match.start()] + bridge + text[match.start():]
+
+          match = pattern.search(text, match.start() + len(bridge))
+          if not match:
+              raise SystemExit("ERROR: RENDER_EndUpdate LOST AFTER BRIDGE INSERT")
+
+          insert_at = match.end()
+          text = (
+              text[:insert_at]
+              + "\n\tif (!abort) ++mk_real_render_frame_counter;\n"
+              + text[insert_at:]
+          )
+
+          path.write_text(text, encoding="utf-8")
+          print("REAL DOSBOX FRAME COUNTER PATCHED")
+          PY
+
       - name: Create Classic and Remastered configs
         run: |
           set -e
@@ -176,16 +240,16 @@ jobs:
               "game/MK1/CLASSIC.CFG": {
                   ("render", "frameskip"): "0",
                   ("render", "aspect"): "true",
-                  ("render", "scaler"): "normal2x",
-                  ("cpu", "core"): "dynamic",
-                  ("cpu", "cycles"): "max",
+                  ("render", "scaler"): "none",
+                  ("cpu", "core"): "simple",
+                  ("cpu", "cycles"): "max 95%",
               },
               "game/MK1/REMASTER.CFG": {
                   ("render", "frameskip"): "0",
                   ("render", "aspect"): "true",
-                  ("render", "scaler"): "hq2x",
-                  ("cpu", "core"): "dynamic",
-                  ("cpu", "cycles"): "max",
+                  ("render", "scaler"): "hq2x forced",
+                  ("cpu", "core"): "simple",
+                  ("cpu", "cycles"): "max 95%",
               },
           }
 
@@ -199,7 +263,8 @@ jobs:
           print("CONFIGS READY")
           PY
 
-          cp game/MK1/CLASSIC.CFG game/MK1/dospad.cfg
+          mkdir -p game/MK1/config
+          cp game/MK1/CLASSIC.CFG game/MK1/config/dospad.cfg
 
       - name: Create MK1 autoboot
         run: |
@@ -487,8 +552,20 @@ jobs:
               NSString *sourceConfig =
                   [destination stringByAppendingPathComponent:configName];
 
+              NSString *configDirectory =
+                  [destination stringByAppendingPathComponent:@"config"];
+
+              NSError *directoryError = nil;
+              [fm createDirectoryAtPath:configDirectory
+            withIntermediateDirectories:YES
+                             attributes:@{}
+                                  error:&directoryError];
+
+              if (directoryError)
+                  NSLog(@"MK CONFIG DIRECTORY ERROR: %@", directoryError);
+
               NSString *activeConfig =
-                  [destination stringByAppendingPathComponent:@"dospad.cfg"];
+                  [configDirectory stringByAppendingPathComponent:@"dospad.cfg"];
 
               [fm removeItemAtPath:activeConfig error:nil];
 
@@ -540,6 +617,16 @@ jobs:
                   1
               )
 
+          if 'extern unsigned long MKRenderFrameCounter(void);' not in text:
+              quartz = '#import <QuartzCore/QuartzCore.h>'
+              if quartz not in text:
+                  raise SystemExit("ERROR: QUARTZCORE IMPORT NOT FOUND")
+              text = text.replace(
+                  quartz,
+                  quartz + '\n\nextern unsigned long MKRenderFrameCounter(void);',
+                  1
+              )
+
           if "_mkFPSLink" not in text:
               ivar_marker = "    PianoKeyboard *piano;\n}"
               if ivar_marker not in text:
@@ -550,11 +637,54 @@ jobs:
                   "    CADisplayLink *_mkFPSLink;\n"
                   "    UILabel *_mkFPSLabel;\n"
                   "    CFTimeInterval _mkFPSLastTime;\n"
-                  "    NSInteger _mkFPSFrames;\n"
+                  "    unsigned long _mkFPSLastCounter;\n"
                   "}"
               )
 
               text = text.replace(ivar_marker, ivars, 1)
+
+          # iDOS rescales the DOS screen through this method after video-mode
+          # changes. Override its requested size for MK1 so it cannot fall
+          # back to the tiny lower-left view.
+          if "MKFINAL_SCALE_OVERRIDE" not in text:
+              scale_pattern = re.compile(
+                  r'(-\s*\(void\)\s*scaleScreenViewToSize:\s*\(CGSize\)size\s*'
+                  r'center:\s*\(CGPoint\)center\s*\{)'
+              )
+
+              scale_match = scale_pattern.search(text)
+              if not scale_match:
+                  raise SystemExit("ERROR: scaleScreenViewToSize:center: NOT FOUND")
+
+              scale_code = r'''
+
+              // MKFINAL_SCALE_OVERRIDE
+              NSString *mkScaleMode =
+                  [NSUserDefaults.standardUserDefaults
+                   stringForKey:@"MKRenderMode"];
+
+              if (mkScaleMode.length > 0 && _rootContainer)
+              {
+                  CGFloat mkW = CGRectGetWidth(_rootContainer.bounds);
+                  CGFloat mkH = CGRectGetHeight(_rootContainer.bounds);
+                  CGFloat mkAspect = 1.60;
+                  CGFloat mkGameH = mkH;
+                  CGFloat mkGameW = mkGameH * mkAspect;
+
+                  if (mkGameW > mkW)
+                  {
+                      mkGameW = mkW;
+                      mkGameH = mkGameW / mkAspect;
+                  }
+
+                  size = CGSizeMake(mkGameW, mkGameH);
+                  center = CGPointMake(mkW / 2.0, mkH / 2.0);
+              }
+              // END MKFINAL_SCALE_OVERRIDE
+              '''
+
+              insert_at = scale_match.end()
+              text = text[:insert_at] + scale_code + text[insert_at:]
 
           if "MKFINAL_GAME_UI" not in text:
               marker = '// MARK: DPGamepadDelegate'
@@ -616,13 +746,10 @@ jobs:
                   gh = gw / aspect;
               }
 
-              self.screenView.frame =
-                  CGRectMake(
-                      (w - gw) / 2.0,
-                      (h - gh) / 2.0,
-                      gw,
-                      gh
-                  );
+              self.screenView.transform = CGAffineTransformIdentity;
+
+              [self scaleScreenViewToSize:CGSizeMake(gw, gh)
+                                    center:CGPointMake(w / 2.0, h / 2.0)];
 
               NSString *mode =
                   [NSUserDefaults.standardUserDefaults
@@ -851,7 +978,7 @@ jobs:
 
               if (!_mkFPSLink)
               {
-                  _mkFPSFrames = 0;
+                  _mkFPSLastCounter = MKRenderFrameCounter();
                   _mkFPSLastTime = 0;
 
                   _mkFPSLink =
@@ -869,24 +996,23 @@ jobs:
               if (_mkFPSLastTime <= 0)
               {
                   _mkFPSLastTime = link.timestamp;
-                  _mkFPSFrames = 0;
+                  _mkFPSLastCounter = MKRenderFrameCounter();
                   return;
               }
-
-              _mkFPSFrames += 1;
 
               CFTimeInterval elapsed =
                   link.timestamp - _mkFPSLastTime;
 
               if (elapsed >= 0.50)
               {
-                  double fps =
-                      (double)_mkFPSFrames / elapsed;
+                  unsigned long now = MKRenderFrameCounter();
+                  unsigned long delta = now - _mkFPSLastCounter;
+                  double fps = (double)delta / elapsed;
 
                   _mkFPSLabel.text =
                       [NSString stringWithFormat:@"FPS %.0f", fps];
 
-                  _mkFPSFrames = 0;
+                  _mkFPSLastCounter = now;
                   _mkFPSLastTime = link.timestamp;
               }
           }
@@ -1140,15 +1266,22 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify patches
+      - name: Verify v0.9 patches
         run: |
           set -e
+          RENDER_CPP=$(find dospad -type f -path "*/src/gui/render.cpp" | head -1)
+          test -n "$RENDER_CPP"
+
+          grep -n "MK_REAL_RENDER_FPS" "$RENDER_CPP"
           grep -n "MKFINAL_AUTOBOOT" dospad/dospad/Main/DOSPadEmulator.m
           grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
           grep -n "MKFINAL_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "_mkFPSLink" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKFINAL_SCALE_OVERRIDE" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKRenderFrameCounter" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
+          echo "V0.9 PATCHES OK"
 
-      - name: Build final MK1 engine
+      - name: Build MK1 v0.9 engine
         run: |
           set +e
           set -o pipefail
@@ -1166,7 +1299,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            PRODUCT_BUNDLE_IDENTIFIER="com.mk1.final.remastered" \
+            PRODUCT_BUNDLE_IDENTIFIER="com.mk1.v09.remastered" \
             build \
             2>&1 | tee output/xcodebuild.log
 
@@ -1234,15 +1367,17 @@ jobs:
           APP=$(cat output/app-path.txt)
 
           {
-            echo "FINAL MK1 CLASSIC + REMASTERED"
+            echo "MK1 v0.9 CLASSIC + REMASTERED TEST"
             echo
             echo "ORIGINAL MK1.EXE: YES"
             echo "FULL ORIGINAL GAME DATA: YES"
-            echo "CLASSIC: normal2x + nearest final scale"
-            echo "REMASTERED: hq2x + linear final scale"
-            echo "CORE: dynamic"
-            echo "CYCLES: max"
-            echo "FPS COUNTER: display FPS"
+            echo "CLASSIC: scaler=none + nearest final scale"
+            echo "REMASTERED: scaler=hq2x forced + linear final scale"
+            echo "CORE: simple"
+            echo "CYCLES: max 95%"
+            echo "FPS COUNTER: DOSBox completed render frames"
+            echo "ACTIVE CONFIG: MK1Final/config/dospad.cfg"
+            echo "REMASTERED NOTE: enhanced scaler, not replacement HD assets"
             echo "CLEAN GAME VIEW: YES"
             echo "LANDSCAPE ONLY: YES"
             echo "SCORPION DARK ICON: YES"
@@ -1268,17 +1403,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-FINAL-Classic-Remastered-KSign.ipa
+            output/MK1-v0.9-REAL-Remaster-KSign.ipa
 
-          ls -lh output/MK1-FINAL-Classic-Remastered-KSign.ipa
+          ls -lh output/MK1-v0.9-REAL-Remaster-KSign.ipa
 
-      - name: Upload final MK1
+      - name: Upload MK1 v0.9
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-FINAL-Classic-Remastered-KSign
+          name: MK1-v0.9-REAL-Remaster-KSign
           path: |
-            output/MK1-FINAL-Classic-Remastered-KSign.ipa
+            output/MK1-v0.9-REAL-Remaster-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1286,7 +1421,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-FINAL-FAIL
+          name: MK1-v0.9-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
