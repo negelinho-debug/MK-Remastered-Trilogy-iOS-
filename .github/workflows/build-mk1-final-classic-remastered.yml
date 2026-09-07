@@ -1,4 +1,4 @@
-name: Build MK1 v0.9.1f Default CPU Classic + Remastered
+name: Build MK1 v0.10 Remaster Alpha
 
 on:
   workflow_dispatch:
@@ -182,14 +182,16 @@ jobs:
           # core/cycles edits were not active; iDOS was using its bundled
           # CPU/timing defaults.
           #
-          # v0.9.1f restores that known-good CPU behaviour and changes
+          # v0.10 restores that known-good CPU behaviour and changes
           # ONLY the visual scaler between modes.
           configs = {
               "game/MK1/CLASSIC.CFG": {
                   ("render", "scaler"): "none",
               },
               "game/MK1/REMASTER.CFG": {
-                  ("render", "scaler"): "hq2x",
+                  ("render", "scaler"): "hq3x",
+                  ("render", "aspect"): "true",
+                  ("render", "frameskip"): "0",
               },
           }
 
@@ -630,7 +632,7 @@ jobs:
           # Do not patch scaleScreenViewToSize in this stable revision.
           # That removes another fragile regex and keeps native iDOS
           # screen geometry untouched. CLASSIC vs REMASTERED stays in
-          # DOSBox configs: scaler=none vs scaler=hq2x.
+          # DOSBox configs: scaler=none vs scaler=hq3x.
 
           if "MKSTABLE_GAME_UI" not in text:
               marker = '// MARK: DPGamepadDelegate'
@@ -761,6 +763,26 @@ jobs:
 
               // Re-run native iDOS layout after MK1 has entered graphics.
               [self updateScreen];
+
+              NSString *mkVisualMode =
+                  [NSUserDefaults.standardUserDefaults
+                   stringForKey:@"MKRenderMode"];
+
+              BOOL mkRemastered =
+                  [mkVisualMode isEqualToString:@"REMASTERED"];
+
+              // CLASSIC keeps hard original pixels.
+              // REMASTERED uses the DOSBox HQ3X result and smooth final
+              // sampling on the iPhone display.
+              self.screenView.layer.magnificationFilter =
+                  mkRemastered ? kCAFilterLinear : kCAFilterNearest;
+
+              self.screenView.layer.minificationFilter =
+                  mkRemastered ? kCAFilterLinear : kCAFilterNearest;
+
+              self.screenView.layer.shouldRasterize =
+                  mkRemastered ? NO : YES;
+
               [self mkStableHideIDOSChrome];
           }
 
@@ -1045,7 +1067,7 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.9.1f patches
+      - name: Verify v0.10 patches
         run: |
           set -e
 
@@ -1061,6 +1083,13 @@ jobs:
           grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "MKFullscreenReady" dospad/dospad/Main/DPAppDelegate.m
           grep -n "mkStableEnableFullscreen" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "kCAFilterLinear" dospad/dospad/Main/DPEmulatorViewController.m
+
+          echo "===== VERIFY REMASTER CONFIG ====="
+          grep -n "^scaler=hq3x$" game/MK1/REMASTER.CFG
+          grep -n "^aspect=true$" game/MK1/REMASTER.CFG
+          grep -n "^frameskip=0$" game/MK1/REMASTER.CFG
+          grep -n "^scaler=none$" game/MK1/CLASSIC.CFG
 
           echo "===== VERIFY NO FORCED CPU OVERRIDES ====="
           if grep -q '^core=dynamic$' game/MK1/CLASSIC.CFG &&              grep -q '^cycles=max 95%$' game/MK1/CLASSIC.CFG; then
@@ -1080,9 +1109,9 @@ jobs:
             exit 1
           fi
 
-          echo "V0.9.1f PATCHES OK"
+          echo "V0.10 PATCHES OK"
 
-      - name: Build MK1 v0.9.1f engine
+      - name: Build MK1 v0.10 engine
         run: |
           set +e
           set -o pipefail
@@ -1168,17 +1197,17 @@ jobs:
           APP=$(cat output/app-path.txt)
 
           {
-            echo "MK1 v0.9.1 STABLE CLASSIC + REMASTERED"
+            echo "MK1 v0.10 REMASTER ALPHA"
             echo
             echo "ORIGINAL MK1.EXE: YES"
             echo "FULL ORIGINAL GAME DATA: YES"
             echo "CLASSIC: scaler=none + nearest final scale"
-            echo "REMASTERED: scaler=hq2x + linear final scale"
+            echo "REMASTERED: scaler=hq3x + aspect correction + linear final scale"
             echo "CORE: simple"
             echo "CYCLES: max 95%"
             echo "FPS COUNTER: DISABLED FOR STABILITY"
             echo "ACTIVE CONFIG: MK1Final/config/dospad.cfg"
-            echo "REMASTERED NOTE: enhanced scaler, not replacement HD assets"
+            echo "REMASTERED NOTE: visual remaster stage 1; same original game assets"
             echo "CLEAN GAME VIEW: YES"
             echo "LANDSCAPE ONLY: YES"
             echo "SCORPION DARK ICON: YES"
@@ -1204,17 +1233,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9.1f-STABLE-KSign.ipa
+            output/MK1-v0.10-REMASTER-ALPHA-KSign.ipa
 
-          ls -lh output/MK1-v0.9.1f-STABLE-KSign.ipa
+          ls -lh output/MK1-v0.10-REMASTER-ALPHA-KSign.ipa
 
-      - name: Upload MK1 v0.9.1f Stable
+      - name: Upload MK1 v0.10 Remaster Alpha
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1f-STABLE-KSign
+          name: MK1-v0.10-REMASTER-ALPHA-KSign
           path: |
-            output/MK1-v0.9.1f-STABLE-KSign.ipa
+            output/MK1-v0.10-REMASTER-ALPHA-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
