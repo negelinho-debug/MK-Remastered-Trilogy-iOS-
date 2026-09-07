@@ -1,4 +1,4 @@
-name: Build MK1 v0.9.1e Dynamic Core Classic + Remastered
+name: Build MK1 v0.9.1f Default CPU Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -173,20 +173,23 @@ jobs:
                   return text.replace(marker, marker + f"\n{key}={value}", 1)
               return text + f"\n[{section}]\n{key}={value}\n"
 
+          # IMPORTANT:
+          # Do NOT override CPU core/cycles here.
+          #
+          # The earlier build that actually reached MK1's fighter select
+          # had dospad.cfg in the game root, while current iDOS reads
+          # <workingDirectory>/config/dospad.cfg. That means those old
+          # core/cycles edits were not active; iDOS was using its bundled
+          # CPU/timing defaults.
+          #
+          # v0.9.1f restores that known-good CPU behaviour and changes
+          # ONLY the visual scaler between modes.
           configs = {
               "game/MK1/CLASSIC.CFG": {
-                  ("render", "frameskip"): "0",
-                  ("render", "aspect"): "true",
                   ("render", "scaler"): "none",
-                  ("cpu", "core"): "dynamic",
-                  ("cpu", "cycles"): "max 95%",
               },
               "game/MK1/REMASTER.CFG": {
-                  ("render", "frameskip"): "0",
-                  ("render", "aspect"): "true",
                   ("render", "scaler"): "hq2x",
-                  ("cpu", "core"): "dynamic",
-                  ("cpu", "cycles"): "max 95%",
               },
           }
 
@@ -828,7 +831,7 @@ jobs:
               [self
                performSelector:@selector(mkStableEnableFullscreen)
                withObject:nil
-               afterDelay:3.0];
+               afterDelay:10.0];
           }
 
           // END MKSTABLE_GAME_UI
@@ -1042,7 +1045,7 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.9.1e patches
+      - name: Verify v0.9.1f patches
         run: |
           set -e
 
@@ -1053,15 +1056,18 @@ jobs:
           grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
           grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
 
-          echo "===== VERIFY CPU CORE ====="
-          grep -n "^core=dynamic$" game/MK1/CLASSIC.CFG
-          grep -n "^core=dynamic$" game/MK1/REMASTER.CFG
-
           echo "===== VERIFY STABLE SCREEN PATCH ====="
           grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "MKFullscreenReady" dospad/dospad/Main/DPAppDelegate.m
           grep -n "mkStableEnableFullscreen" dospad/dospad/Main/DPEmulatorViewController.m
+
+          echo "===== VERIFY NO FORCED CPU OVERRIDES ====="
+          if grep -q '^core=dynamic$' game/MK1/CLASSIC.CFG &&              grep -q '^cycles=max 95%$' game/MK1/CLASSIC.CFG; then
+            echo "INFO: stock config itself contains these values; no YAML override was added."
+          else
+            echo "CPU/timing left at stock iDOS config values."
+          fi
 
           echo "===== VERIFY REMOVED EXPERIMENTAL PATCHES ====="
           if grep -q "MK_REAL_RENDER_FPS" dospad/dospad/Main/DPEmulatorViewController.m 2>/dev/null; then
@@ -1074,9 +1080,9 @@ jobs:
             exit 1
           fi
 
-          echo "V0.9.1e PATCHES OK"
+          echo "V0.9.1f PATCHES OK"
 
-      - name: Build MK1 v0.9.1e engine
+      - name: Build MK1 v0.9.1f engine
         run: |
           set +e
           set -o pipefail
@@ -1198,17 +1204,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9.1e-STABLE-KSign.ipa
+            output/MK1-v0.9.1f-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.9.1e-STABLE-KSign.ipa
+          ls -lh output/MK1-v0.9.1f-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.9.1e Stable
+      - name: Upload MK1 v0.9.1f Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1e-STABLE-KSign
+          name: MK1-v0.9.1f-STABLE-KSign
           path: |
-            output/MK1-v0.9.1e-STABLE-KSign.ipa
+            output/MK1-v0.9.1f-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
