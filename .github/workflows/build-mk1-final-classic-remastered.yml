@@ -1,4 +1,4 @@
-name: Build MK Trilogy Classic v0.5.1.1 Verify Fix
+name: Build MK Trilogy Classic v0.5.2.1 Verify Fix
 
 on:
   workflow_dispatch:
@@ -887,7 +887,14 @@ jobs:
                   raise SystemExit("ERROR: UIKIT IMPORT NOT FOUND")
               text = text.replace(
                   marker,
-                  marker + '\n#import <QuartzCore/QuartzCore.h>\n#import "DPAppDelegate.h"',
+                  marker
+                  + '\n#import <QuartzCore/QuartzCore.h>'
+                  + '\n#import "DPAppDelegate.h"'
+                  + '\n'
+                  + '\n@interface DPAppDelegate (MKTrilogyVisible)'
+                  + '\n- (void)mkTrilogyReturnToMenu;'
+                  + '\n@end'
+                  + '\n',
                   1
               )
 
@@ -1531,6 +1538,8 @@ jobs:
           echo "===== VERIFY EXIT-TO-MENU ====="
           grep -n "mkTrilogyReturnToMenu" dospad/dospad/Main/DPAppDelegate.m
           grep -n "mkTrilogyWaitForExitThenMenu" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "MKTrilogyVisible" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "mkTrilogyReturnToMenu;" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "mkStableExitToMenu" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n 'setTitle:@"EXIT"' dospad/dospad/Main/DPEmulatorViewController.m
 
@@ -1648,7 +1657,7 @@ jobs:
 
           {
             echo "============================================"
-            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.5.1"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.5.2"
             echo "============================================"
             echo
             echo "MK1: ORIGINAL MK1.EXE"
@@ -1690,17 +1699,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Trilogy-Classic-v0.5.1-KSign.ipa
+            output/MK-Trilogy-Classic-v0.5.2-KSign.ipa
 
-          ls -lh output/MK-Trilogy-Classic-v0.5.1-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.5.2-KSign.ipa
 
-      - name: Upload MK Trilogy Classic v0.5.1
+      - name: Upload MK Trilogy Classic v0.5.2 Interface Fix
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.5.1-KSign
+          name: MK-Trilogy-Classic-v0.5.2-KSign
           path: |
-            output/MK-Trilogy-Classic-v0.5.1-KSign.ipa
+            output/MK-Trilogy-Classic-v0.5.2-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1708,7 +1717,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.5.1-FAIL
+          name: MK-Trilogy-Classic-v0.5.2-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
