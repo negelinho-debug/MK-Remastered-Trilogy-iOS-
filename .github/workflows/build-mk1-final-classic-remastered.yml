@@ -1,4 +1,4 @@
-name: Build MK Trilogy Classic v0.4 MK2 Reset + MK3 Restart
+name: Build MK Trilogy Classic v0.5 MK3 Boot + Exit Menu
 
 on:
   workflow_dispatch:
@@ -389,8 +389,13 @@ jobs:
         run: |
           set -e
 
-          cat > game/MK3/RUNMK3.BAT <<'EOF'
+          MOUNT_CMD=$(cat game/MK3/MK3-CD-MOUNT.TXT)
+
+          cat > game/MK3/MK3BOOT.BAT <<EOF
           @ECHO OFF
+          C:
+          CD \\
+          $MOUNT_CMD
           :MK3LOOP
           MK3.EXE
           GOTO MK3LOOP
@@ -408,14 +413,9 @@ jobs:
           MK2.EXE
           EOF
 
-          {
-            cat game/MK3/MK3-CD-MOUNT.TXT
-            cat <<'EOF'
-          C:
-          CD \
-          RUNMK3.BAT
+          cat > game/MK3/MKAUTO.TXT <<'EOF'
+          C:\MK3BOOT.BAT
           EOF
-          } > game/MK3/MKAUTO.TXT
 
           echo "===== MK1 AUTOBOOT ====="
           cat game/MK1/MKAUTO.TXT
@@ -502,6 +502,8 @@ jobs:
           @interface DPAppDelegate (MKTrilogy)
           - (void)mkTrilogyShowMenu;
           - (void)mkTrilogyLaunchGame:(NSString *)game;
+          - (void)mkTrilogyReturnToMenu;
+          - (void)mkTrilogyWaitForExitThenMenu;
           @end
 
           @interface MKTrilogyMenuController : UIViewController
@@ -719,6 +721,56 @@ jobs:
                completion:nil];
           }
 
+          - (void)mkTrilogyReturnToMenu
+          {
+              DOSPadEmulator *emulator =
+                  [DOSPadEmulator sharedInstance];
+
+              if (!emulator.started)
+              {
+                  [DOSPadEmulator setSharedInstance:nil];
+                  [self mkTrilogyShowMenu];
+                  return;
+              }
+
+              // Standard DOSBox terminate shortcut: Ctrl + F9.
+              [emulator sendKey:224 pressed:YES];
+              [emulator sendKey:66 pressed:YES];
+              [emulator sendKey:66 pressed:NO];
+              [emulator sendKey:224 pressed:NO];
+
+              [self
+               performSelector:@selector(mkTrilogyWaitForExitThenMenu)
+               withObject:nil
+               afterDelay:0.45];
+          }
+
+
+          - (void)mkTrilogyWaitForExitThenMenu
+          {
+              if ([DOSPadEmulator sharedInstance].started)
+              {
+                  [self
+                   performSelector:@selector(mkTrilogyWaitForExitThenMenu)
+                   withObject:nil
+                   afterDelay:0.25];
+
+                  return;
+              }
+
+              // Start the next selected game with a fresh wrapper object.
+              [DOSPadEmulator setSharedInstance:nil];
+
+              [NSUserDefaults.standardUserDefaults
+               setBool:NO
+               forKey:@"MKFullscreenReady"];
+
+              [NSUserDefaults.standardUserDefaults synchronize];
+
+              [self mkTrilogyShowMenu];
+          }
+
+
           - (void)mkTrilogyLaunchGame:(NSString *)game
           {
               NSFileManager *fm = [NSFileManager defaultManager];
@@ -835,7 +887,7 @@ jobs:
                   raise SystemExit("ERROR: UIKIT IMPORT NOT FOUND")
               text = text.replace(
                   marker,
-                  marker + '\n#import <QuartzCore/QuartzCore.h>',
+                  marker + '\n#import <QuartzCore/QuartzCore.h>\n#import "DPAppDelegate.h"',
                   1
               )
 
@@ -1000,6 +1052,58 @@ jobs:
               return b;
           }
 
+          - (UIButton *)mkStableExitButton:
+              (CGRect)frame
+          {
+              UIButton *b =
+                  [UIButton buttonWithType:UIButtonTypeSystem];
+
+              b.frame = frame;
+              b.accessibilityIdentifier = @"MK_STABLE_CONTROL";
+
+              [b setTitle:@"EXIT"
+                 forState:UIControlStateNormal];
+
+              [b setTitleColor:UIColor.whiteColor
+                      forState:UIControlStateNormal];
+
+              b.titleLabel.font =
+                  [UIFont
+                   systemFontOfSize:12
+                   weight:UIFontWeightBlack];
+
+              b.backgroundColor =
+                  [UIColor colorWithWhite:0.0 alpha:0.34];
+
+              b.layer.cornerRadius = 13;
+              b.layer.borderWidth = 1;
+              b.layer.borderColor =
+                  [UIColor colorWithRed:0.95
+                                   green:0.12
+                                    blue:0.08
+                                   alpha:0.55].CGColor;
+
+              [b addTarget:self
+                    action:@selector(mkStableExitToMenu:)
+          forControlEvents:UIControlEventTouchUpInside];
+
+              return b;
+          }
+
+
+          - (void)mkStableExitToMenu:
+              (UIButton *)button
+          {
+              button.enabled = NO;
+
+              DPAppDelegate *appDelegate =
+                  (DPAppDelegate *)
+                  UIApplication.sharedApplication.delegate;
+
+              [appDelegate mkTrilogyReturnToMenu];
+          }
+
+
           - (void)mkStableKeyDown:(UIButton *)button
           {
               [[DOSPadEmulator sharedInstance]
@@ -1118,15 +1222,19 @@ jobs:
                [self mkStableButton:@"START" frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32) key:keyStart]];
 
               [_rootContainer addSubview:
-               [self mkStableButton:(isMK3 ? @"MENU" : @"ESC")
-                              frame:CGRectMake(8, 8, 58, 30)
+               [self mkStableButton:@"ESC"
+                              frame:CGRectMake(8, 8, 50, 30)
                                 key:41]];
+
+              [_rootContainer addSubview:
+               [self mkStableExitButton:
+                CGRectMake(64, 8, 58, 30)]];
 
               if (isMK2)
               {
                   [_rootContainer addSubview:
                    [self mkStableButton:@"SETUP"
-                                  frame:CGRectMake(72, 8, 64, 30)
+                                  frame:CGRectMake(128, 8, 64, 30)
                                     key:67]];
               }
 
@@ -1413,11 +1521,18 @@ jobs:
           fi
           echo "MK2 CMOS RESET OK"
 
-          echo "===== VERIFY MK3 RESTART LOOP ====="
-          test -f game/MK3/RUNMK3.BAT
-          grep -n ":MK3LOOP" game/MK3/RUNMK3.BAT
-          grep -n "GOTO MK3LOOP" game/MK3/RUNMK3.BAT
-          grep -n "RUNMK3.BAT" game/MK3/MKAUTO.TXT
+          echo "===== VERIFY MK3 ONE-SHOT BOOT BATCH ====="
+          test -f game/MK3/MK3BOOT.BAT
+          grep -n "^IMGMOUNT D " game/MK3/MK3BOOT.BAT
+          grep -n ":MK3LOOP" game/MK3/MK3BOOT.BAT
+          grep -n "GOTO MK3LOOP" game/MK3/MK3BOOT.BAT
+          grep -n 'C:\\MK3BOOT.BAT' game/MK3/MKAUTO.TXT
+
+          echo "===== VERIFY EXIT-TO-MENU ====="
+          grep -n "mkTrilogyReturnToMenu" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "mkTrilogyWaitForExitThenMenu" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "mkStableExitToMenu" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n 'setTitle:@"EXIT"' dospad/dospad/Main/DPEmulatorViewController.m
 
           echo "===== VERIFY MK3 CD ====="
           test -s game/MK3/MK3-CD-MOUNT.TXT
@@ -1532,7 +1647,7 @@ jobs:
 
           {
             echo "============================================"
-            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.4"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.5"
             echo "============================================"
             echo
             echo "MK1: ORIGINAL MK1.EXE"
@@ -1574,17 +1689,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Trilogy-Classic-v0.4-KSign.ipa
+            output/MK-Trilogy-Classic-v0.5-KSign.ipa
 
-          ls -lh output/MK-Trilogy-Classic-v0.4-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.5-KSign.ipa
 
-      - name: Upload MK Trilogy Classic v0.4
+      - name: Upload MK Trilogy Classic v0.5 MK3 Boot + Exit Menu
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.4-KSign
+          name: MK-Trilogy-Classic-v0.5-KSign
           path: |
-            output/MK-Trilogy-Classic-v0.4-KSign.ipa
+            output/MK-Trilogy-Classic-v0.5-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1592,7 +1707,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.4-FAIL
+          name: MK-Trilogy-Classic-v0.5-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
