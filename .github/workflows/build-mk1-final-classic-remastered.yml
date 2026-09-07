@@ -389,18 +389,6 @@ jobs:
         run: |
           set -e
 
-          MOUNT_CMD=$(cat game/MK3/MK3-CD-MOUNT.TXT)
-
-          cat > game/MK3/MK3BOOT.BAT <<EOF
-          @ECHO OFF
-          C:
-          CD \\
-          $MOUNT_CMD
-          :MK3LOOP
-          MK3.EXE
-          GOTO MK3LOOP
-          EOF
-
           cat > game/MK1/MKAUTO.TXT <<'EOF'
           C:
           CD \
@@ -413,9 +401,16 @@ jobs:
           MK2.EXE
           EOF
 
-          cat > game/MK3/MKAUTO.TXT <<'EOF'
-          C:\MK3BOOT.BAT
+          # MK3: return to the direct launch sequence that previously
+          # entered the game correctly on-device.
+          {
+            cat game/MK3/MK3-CD-MOUNT.TXT
+            cat <<'EOF'
+          C:
+          CD \
+          MK3.EXE
           EOF
+          } > game/MK3/MKAUTO.TXT
 
           echo "===== MK1 AUTOBOOT ====="
           cat game/MK1/MKAUTO.TXT
@@ -1528,12 +1523,11 @@ jobs:
           fi
           echo "MK2 CMOS RESET OK"
 
-          echo "===== VERIFY MK3 ONE-SHOT BOOT BATCH ====="
-          test -f game/MK3/MK3BOOT.BAT
-          grep -n "^IMGMOUNT D " game/MK3/MK3BOOT.BAT
-          grep -n ":MK3LOOP" game/MK3/MK3BOOT.BAT
-          grep -n "GOTO MK3LOOP" game/MK3/MK3BOOT.BAT
-          grep -n 'C:\\MK3BOOT.BAT' game/MK3/MKAUTO.TXT
+          echo "===== VERIFY MK3 DIRECT BOOT ====="
+          grep -n "^IMGMOUNT D " game/MK3/MKAUTO.TXT
+          grep -n "^C:$" game/MK3/MKAUTO.TXT
+          grep -n "^CD \\\\$" game/MK3/MKAUTO.TXT
+          grep -n "^MK3.EXE$" game/MK3/MKAUTO.TXT
 
           echo "===== VERIFY EXIT-TO-MENU ====="
           grep -n "mkTrilogyReturnToMenu" dospad/dospad/Main/DPAppDelegate.m
@@ -1546,8 +1540,8 @@ jobs:
           echo "===== VERIFY MK3 CD ====="
           test -s game/MK3/MK3-CD-MOUNT.TXT
           grep -n "^IMGMOUNT D " game/MK3/MK3-CD-MOUNT.TXT
-          grep -n "^IMGMOUNT D " game/MK3/MK3BOOT.BAT
-          grep -n 'C:\\MK3BOOT.BAT' game/MK3/MKAUTO.TXT
+          grep -n "^IMGMOUNT D " game/MK3/MKAUTO.TXT
+          grep -n "^MK3.EXE$" game/MK3/MKAUTO.TXT
           find game/MK3/CDIMAGE -maxdepth 1 -type f | grep .
 
           echo "===== VERIFY STABLE SCREEN / TOUCH ====="
