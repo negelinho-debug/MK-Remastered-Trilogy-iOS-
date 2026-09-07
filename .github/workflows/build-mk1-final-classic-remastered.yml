@@ -1,4 +1,4 @@
-name: Build MK1 v0.10.1.1 Remaster Stable
+name: Build MK Trilogy Classic v0.1
 
 on:
   workflow_dispatch:
@@ -115,34 +115,46 @@ jobs:
 
           find extracted -type f -iname "MK1.EXE" -print || true
 
-      - name: Normalize complete MK1
+      - name: Normalize complete MK Trilogy
         run: |
           set -e
 
-          MK1_EXE=$(
-            find extracted \
-              -type f \
-              -iname "MK1.EXE" \
-              -not -path "*/__support/*" \
-              | head -1
-          )
+          normalize_game() {
+            GAME="$1"
+            EXE_NAME="$2"
 
-          if [ -z "$MK1_EXE" ]; then
-            echo "ERROR: REAL MK1.EXE NOT FOUND"
-            exit 1
-          fi
+            EXE_PATH=$(
+              find extracted \
+                -type f \
+                -iname "$EXE_NAME" \
+                -not -path "*/__support/*" \
+                | head -1
+            )
 
-          MK1_DIR="$(dirname "$MK1_EXE")"
+            if [ -z "$EXE_PATH" ]; then
+              echo "ERROR: $EXE_NAME NOT FOUND"
+              exit 1
+            fi
 
-          rm -rf game/MK1
-          mkdir -p game/MK1
-          cp -R "$MK1_DIR"/. game/MK1/
+            SRC_DIR="$(dirname "$EXE_PATH")"
 
-          test -f game/MK1/MK1.EXE
-          test -f game/MK1/GRAPHICS/NINJA.GRA
+            rm -rf "game/$GAME"
+            mkdir -p "game/$GAME"
+            cp -R "$SRC_DIR"/. "game/$GAME/"
 
-          echo "MK1 FILES=$(find game/MK1 -type f | wc -l | tr -d ' ')"
-          echo "GRA FILES=$(find game/MK1 -type f -iname '*.GRA' | wc -l | tr -d ' ')"
+            test -f "game/$GAME/$EXE_NAME"
+
+            echo "$GAME FILES=$(find "game/$GAME" -type f | wc -l | tr -d ' ')"
+          }
+
+          normalize_game MK1 MK1.EXE
+          normalize_game MK2 MK2.EXE
+          normalize_game MK3 MK3.EXE
+
+          echo "===== TRILOGY READY ====="
+          ls -lh game/MK1/MK1.EXE
+          ls -lh game/MK2/MK2.EXE
+          ls -lh game/MK3/MK3.EXE
 
       - name: Clone iDOS
         run: |
@@ -151,14 +163,16 @@ jobs:
           xcodebuild -project dospad/dospad.xcodeproj -list
 
 
-      - name: Create Classic and Remastered configs
+      - name: Create Classic configs
         run: |
           set -e
+
           BASE="dospad/Resources/configs/dospad.cfg"
           test -f "$BASE"
 
-          cp "$BASE" game/MK1/CLASSIC.CFG
-          cp "$BASE" game/MK1/REMASTER.CFG
+          for GAME in MK1 MK2 MK3; do
+            cp "$BASE" "game/$GAME/CLASSIC.CFG"
+          done
 
           python3 <<'PY'
           from pathlib import Path
@@ -166,56 +180,70 @@ jobs:
 
           def set_option(text, section, key, value):
               pattern = rf"(?m)^{re.escape(key)}\s*=.*$"
+
               if re.search(pattern, text):
                   return re.sub(pattern, f"{key}={value}", text)
+
               marker = f"[{section}]"
+
               if marker in text:
-                  return text.replace(marker, marker + f"\n{key}={value}", 1)
+                  return text.replace(
+                      marker,
+                      marker + f"\n{key}={value}",
+                      1
+                  )
+
               return text + f"\n[{section}]\n{key}={value}\n"
 
-          # IMPORTANT:
-          # Do NOT override CPU core/cycles here.
-          #
-          # The earlier build that actually reached MK1's fighter select
-          # had dospad.cfg in the game root, while current iDOS reads
-          # <workingDirectory>/config/dospad.cfg. That means those old
-          # core/cycles edits were not active; iDOS was using its bundled
-          # CPU/timing defaults.
-          #
-          # v0.10.1 restores that known-good CPU behaviour and changes
-          # ONLY the visual scaler between modes.
-          configs = {
-              "game/MK1/CLASSIC.CFG": {
-                  ("render", "scaler"): "none",
-              },
-              "game/MK1/REMASTER.CFG": {
-                  ("render", "scaler"): "hq2x",
-                  ("render", "aspect"): "true",
-                  ("render", "frameskip"): "0",
-              },
-          }
+          # Keep the stock iDOS CPU/timing from the MK1 build that
+          # actually worked on-device. Classic changes only scaler.
+          for game in ("MK1", "MK2", "MK3"):
+              p = Path(f"game/{game}/CLASSIC.CFG")
+              cfg = p.read_text(errors="ignore")
+              cfg = set_option(cfg, "render", "scaler", "none")
+              p.write_text(cfg)
 
-          for filename, options in configs.items():
-              p = Path(filename)
-              text = p.read_text(errors="ignore")
-              for (section, key), value in options.items():
-                  text = set_option(text, section, key, value)
-              p.write_text(text)
-
-          print("CONFIGS READY")
+          print("CLASSIC CONFIGS READY")
           PY
 
-          mkdir -p game/MK1/config
-          cp game/MK1/CLASSIC.CFG game/MK1/config/dospad.cfg
+          for GAME in MK1 MK2 MK3; do
+            mkdir -p "game/$GAME/config"
+            cp "game/$GAME/CLASSIC.CFG" "game/$GAME/config/dospad.cfg"
 
-      - name: Create MK1 autoboot
+            echo "===== $GAME CONFIG ====="
+            grep -E "^(core|cycles|scaler)=" "game/$GAME/CLASSIC.CFG" || true
+          done
+
+      - name: Create Trilogy autoboot
         run: |
           set -e
+
           cat > game/MK1/MKAUTO.TXT <<'EOF'
           C:
           CD \
           MK1.EXE
           EOF
+
+          cat > game/MK2/MKAUTO.TXT <<'EOF'
+          C:
+          CD \
+          MK2.EXE
+          EOF
+
+          cat > game/MK3/MKAUTO.TXT <<'EOF'
+          C:
+          CD \
+          MK3.EXE
+          EOF
+
+          echo "===== MK1 AUTOBOOT ====="
+          cat game/MK1/MKAUTO.TXT
+
+          echo "===== MK2 AUTOBOOT ====="
+          cat game/MK2/MKAUTO.TXT
+
+          echo "===== MK3 AUTOBOOT ====="
+          cat game/MK3/MKAUTO.TXT
 
       - name: Patch final MK1 app
         run: |
@@ -270,47 +298,59 @@ jobs:
               emu.write_text(text, encoding="utf-8")
 
           # ------------------------------------------------------
-          # 2) MAIN MENU
+          # 2) TRILOGY MAIN MENU
           # ------------------------------------------------------
 
           delegate = Path("dospad/dospad/Main/DPAppDelegate.m")
           text = delegate.read_text(encoding="utf-8")
 
-          if "MKFINAL_MENU" not in text:
+          if "MKTRILOGY_MENU" not in text:
               import_marker = '#import <AVFoundation/AVFoundation.h>'
+
               if import_marker not in text:
-                  raise SystemExit("ERROR: APP DELEGATE IMPORT MARKER NOT FOUND")
+                  raise SystemExit(
+                      "ERROR: APP DELEGATE IMPORT MARKER NOT FOUND"
+                  )
 
               menu = r'''
 
           // ======================================================
-          // MKFINAL_MENU
+          // MKTRILOGY_MENU
           // ======================================================
 
-          @interface DPAppDelegate (MKFinal)
-          - (void)mkFinalShowMenu;
-          - (void)mkFinalLaunchMode:(NSString *)mode;
+          @interface DPAppDelegate (MKTrilogy)
+          - (void)mkTrilogyShowMenu;
+          - (void)mkTrilogyLaunchGame:(NSString *)game;
           @end
 
-          @interface MKFinalMenuController : UIViewController
+          @interface MKTrilogyMenuController : UIViewController
           @property(nonatomic, weak) DPAppDelegate *owner;
-          @property(nonatomic, strong) UIButton *classicButton;
-          @property(nonatomic, strong) UIButton *remasteredButton;
+          @property(nonatomic, strong) UIButton *mk1Button;
+          @property(nonatomic, strong) UIButton *mk2Button;
+          @property(nonatomic, strong) UIButton *mk3Button;
           @property(nonatomic, strong) UILabel *statusLabel;
           @end
 
-          @implementation MKFinalMenuController
+          @implementation MKTrilogyMenuController
 
-          - (UIButton *)mkButton:(NSString *)title
+          - (UIButton *)mkGameButton:(NSString *)title
           {
               UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+
               [b setTitle:title forState:UIControlStateNormal];
               [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-              b.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightBlack];
-              b.backgroundColor = [UIColor colorWithRed:0.31 green:0.015 blue:0.02 alpha:1.0];
+
+              b.titleLabel.font =
+                  [UIFont systemFontOfSize:21 weight:UIFontWeightBlack];
+
+              b.backgroundColor =
+                  [UIColor colorWithRed:0.31 green:0.015 blue:0.02 alpha:1.0];
+
               b.layer.cornerRadius = 14;
               b.layer.borderWidth = 1;
-              b.layer.borderColor = [UIColor colorWithRed:0.95 green:0.15 blue:0.10 alpha:0.55].CGColor;
+              b.layer.borderColor =
+                  [UIColor colorWithRed:0.95 green:0.15 blue:0.10 alpha:0.55].CGColor;
+
               return b;
           }
 
@@ -333,12 +373,12 @@ jobs:
               title.text = @"MORTAL KOMBAT";
               title.textAlignment = NSTextAlignmentCenter;
               title.textColor = UIColor.whiteColor;
-              title.font = [UIFont systemFontOfSize:42 weight:UIFontWeightBlack];
+              title.font = [UIFont systemFontOfSize:40 weight:UIFontWeightBlack];
               [self.view addSubview:title];
 
               UILabel *sub = [[UILabel alloc] init];
               sub.tag = 7002;
-              sub.text = @"COMPLETE MK1";
+              sub.text = @"CLASSIC TRILOGY";
               sub.textAlignment = NSTextAlignmentCenter;
               sub.textColor = [UIColor colorWithRed:1 green:0.24 blue:0.16 alpha:1];
               sub.font = [UIFont systemFontOfSize:17 weight:UIFontWeightBlack];
@@ -346,42 +386,58 @@ jobs:
 
               UILabel *choose = [[UILabel alloc] init];
               choose.tag = 7003;
-              choose.text = @"CHOOSE MODE";
+              choose.text = @"CHOOSE YOUR GAME";
               choose.textAlignment = NSTextAlignmentCenter;
               choose.textColor = [UIColor colorWithWhite:0.72 alpha:1];
               choose.font = [UIFont systemFontOfSize:13 weight:UIFontWeightBold];
               [self.view addSubview:choose];
 
-              self.classicButton = [self mkButton:@"CLASSIC"];
-              self.classicButton.tag = 1;
-              [self.classicButton addTarget:self
-                                     action:@selector(modePressed:)
-                           forControlEvents:UIControlEventTouchUpInside];
-              [self.view addSubview:self.classicButton];
+              self.mk1Button = [self mkGameButton:@"MORTAL KOMBAT"];
+              self.mk1Button.tag = 1;
+              [self.mk1Button addTarget:self
+                                 action:@selector(gamePressed:)
+                       forControlEvents:UIControlEventTouchUpInside];
+              [self.view addSubview:self.mk1Button];
 
-              self.remasteredButton = [self mkButton:@"REMASTERED"];
-              self.remasteredButton.tag = 2;
-              [self.remasteredButton addTarget:self
-                                        action:@selector(modePressed:)
-                              forControlEvents:UIControlEventTouchUpInside];
-              [self.view addSubview:self.remasteredButton];
+              self.mk2Button = [self mkGameButton:@"MORTAL KOMBAT II"];
+              self.mk2Button.tag = 2;
+              [self.mk2Button addTarget:self
+                                 action:@selector(gamePressed:)
+                       forControlEvents:UIControlEventTouchUpInside];
+              [self.view addSubview:self.mk2Button];
+
+              self.mk3Button = [self mkGameButton:@"MORTAL KOMBAT 3"];
+              self.mk3Button.tag = 3;
+              [self.mk3Button addTarget:self
+                                 action:@selector(gamePressed:)
+                       forControlEvents:UIControlEventTouchUpInside];
+              [self.view addSubview:self.mk3Button];
 
               self.statusLabel = [[UILabel alloc] init];
-              self.statusLabel.text = @"ORIGINAL MK1 ENGINE • FULL GAME • STABLE";
+              self.statusLabel.text = @"ORIGINAL DOS GAMES • CLASSIC MODE";
               self.statusLabel.textAlignment = NSTextAlignmentCenter;
               self.statusLabel.textColor = [UIColor colorWithWhite:0.48 alpha:1];
               self.statusLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightBold];
               [self.view addSubview:self.statusLabel];
           }
 
-          - (void)modePressed:(UIButton *)sender
+          - (void)gamePressed:(UIButton *)sender
           {
-              self.classicButton.enabled = NO;
-              self.remasteredButton.enabled = NO;
+              self.mk1Button.enabled = NO;
+              self.mk2Button.enabled = NO;
+              self.mk3Button.enabled = NO;
 
-              NSString *mode = sender.tag == 2 ? @"REMASTERED" : @"CLASSIC";
-              self.statusLabel.text = @"LOADING COMPLETE MK1...";
-              [self.owner mkFinalLaunchMode:mode];
+              NSString *game = @"MK1";
+
+              if (sender.tag == 2)
+                  game = @"MK2";
+              else if (sender.tag == 3)
+                  game = @"MK3";
+
+              self.statusLabel.text =
+                  [NSString stringWithFormat:@"LOADING %@...", game];
+
+              [self.owner mkTrilogyLaunchGame:game];
           }
 
           - (void)viewDidLayoutSubviews
@@ -391,21 +447,33 @@ jobs:
               CGFloat w = CGRectGetWidth(self.view.bounds);
               CGFloat h = CGRectGetHeight(self.view.bounds);
 
-              [self.view viewWithTag:7000].frame = CGRectMake(0, 0, w, h * 0.42);
-              [self.view viewWithTag:7001].frame = CGRectMake(0, h * 0.14, w, 54);
-              [self.view viewWithTag:7002].frame = CGRectMake(0, h * 0.14 + 52, w, 28);
-              [self.view viewWithTag:7003].frame = CGRectMake(0, h * 0.14 + 90, w, 22);
+              [self.view viewWithTag:7000].frame =
+                  CGRectMake(0, 0, w, h * 0.38);
 
-              CGFloat bw = MIN(380, w - 90);
+              [self.view viewWithTag:7001].frame =
+                  CGRectMake(0, h * 0.09, w, 52);
+
+              [self.view viewWithTag:7002].frame =
+                  CGRectMake(0, h * 0.09 + 50, w, 28);
+
+              [self.view viewWithTag:7003].frame =
+                  CGRectMake(0, h * 0.09 + 86, w, 22);
+
+              CGFloat bw = MIN(390, w - 90);
               CGFloat x = (w - bw) / 2.0;
-              CGFloat y = h * 0.48;
+              CGFloat y = h * 0.40;
 
-              self.classicButton.frame = CGRectMake(x, y, bw, 58);
-              self.remasteredButton.frame = CGRectMake(x, y + 72, bw, 58);
-              self.statusLabel.frame = CGRectMake(0, h - 38, w, 18);
+              self.mk1Button.frame = CGRectMake(x, y, bw, 54);
+              self.mk2Button.frame = CGRectMake(x, y + 64, bw, 54);
+              self.mk3Button.frame = CGRectMake(x, y + 128, bw, 54);
+
+              self.statusLabel.frame = CGRectMake(0, h - 32, w, 18);
           }
 
-          - (BOOL)prefersStatusBarHidden { return YES; }
+          - (BOOL)prefersStatusBarHidden
+          {
+              return YES;
+          }
 
           - (UIInterfaceOrientationMask)supportedInterfaceOrientations
           {
@@ -414,17 +482,23 @@ jobs:
 
           @end
 
-          // END MKFINAL_MENU
-              '''
+          // END MKTRILOGY_MENU
 
-              text = text.replace(import_marker, import_marker + "\n" + menu, 1)
+          '''
+
+              text = text.replace(
+                  import_marker,
+                  import_marker + "\n" + menu,
+                  1
+              )
 
               old_start = (
                   '[self performSelector:@selector(startDOS) '
                   'withObject:nil afterDelay:1];'
               )
+
               new_start = (
-                  '[self performSelector:@selector(mkFinalShowMenu) '
+                  '[self performSelector:@selector(mkTrilogyShowMenu) '
                   'withObject:nil afterDelay:0.20];'
               )
 
@@ -434,36 +508,46 @@ jobs:
               text = text.replace(old_start, new_start, 1)
 
               method_marker = '-(void)setWindowTitle:(char *)title'
+
               if method_marker not in text:
-                  raise SystemExit("ERROR: APP DELEGATE METHOD MARKER NOT FOUND")
+                  raise SystemExit(
+                      "ERROR: APP DELEGATE METHOD MARKER NOT FOUND"
+                  )
 
               methods = r'''
 
           // ======================================================
-          // MK FINAL LAUNCH
+          // MK TRILOGY CLASSIC LAUNCH
           // ======================================================
 
-          - (void)mkFinalShowMenu
+          - (void)mkTrilogyShowMenu
           {
               if ([DOSPadEmulator sharedInstance].started)
                   return;
 
-              MKFinalMenuController *menu = [[MKFinalMenuController alloc] init];
-              menu.owner = self;
-              menu.modalPresentationStyle = UIModalPresentationFullScreen;
+              MKTrilogyMenuController *menu =
+                  [[MKTrilogyMenuController alloc] init];
 
-              [self.emulatorController presentViewController:menu
-                                                    animated:NO
-                                                  completion:nil];
+              menu.owner = self;
+              menu.modalPresentationStyle =
+                  UIModalPresentationFullScreen;
+
+              [self.emulatorController
+               presentViewController:menu
+               animated:NO
+               completion:nil];
           }
 
-          - (void)mkFinalLaunchMode:(NSString *)mode
+          - (void)mkTrilogyLaunchGame:(NSString *)game
           {
               NSFileManager *fm = [NSFileManager defaultManager];
 
-              NSString *bundleGame =
+              NSString *bundleGames =
                   [[NSBundle.mainBundle bundlePath]
-                   stringByAppendingPathComponent:@"MKGame"];
+                   stringByAppendingPathComponent:@"MKGames"];
+
+              NSString *bundleGame =
+                  [bundleGames stringByAppendingPathComponent:game];
 
               NSString *documents =
                   [NSSearchPathForDirectoriesInDomains(
@@ -472,39 +556,39 @@ jobs:
                       YES
                    ) lastObject];
 
+              NSString *trilogyRoot =
+                  [documents stringByAppendingPathComponent:@"MKTrilogyClassic"];
+
               NSString *destination =
-                  [documents stringByAppendingPathComponent:@"MK1Final"];
+                  [trilogyRoot stringByAppendingPathComponent:game];
+
+              [fm createDirectoryAtPath:trilogyRoot
+            withIntermediateDirectories:YES
+                             attributes:@{}
+                                  error:nil];
 
               [fm removeItemAtPath:destination error:nil];
 
               NSError *copyError = nil;
+
               if (![fm copyItemAtPath:bundleGame
                                toPath:destination
                                 error:&copyError])
               {
-                  NSLog(@"MK COPY ERROR: %@", copyError);
+                  NSLog(@"MK TRILOGY COPY ERROR: %@", copyError);
                   return;
               }
 
-              NSString *configName =
-                  [mode isEqualToString:@"REMASTERED"]
-                  ? @"REMASTER.CFG"
-                  : @"CLASSIC.CFG";
-
               NSString *sourceConfig =
-                  [destination stringByAppendingPathComponent:configName];
+                  [destination stringByAppendingPathComponent:@"CLASSIC.CFG"];
 
               NSString *configDirectory =
                   [destination stringByAppendingPathComponent:@"config"];
 
-              NSError *directoryError = nil;
               [fm createDirectoryAtPath:configDirectory
             withIntermediateDirectories:YES
                              attributes:@{}
-                                  error:&directoryError];
-
-              if (directoryError)
-                  NSLog(@"MK CONFIG DIRECTORY ERROR: %@", directoryError);
+                                  error:nil];
 
               NSString *activeConfig =
                   [configDirectory stringByAppendingPathComponent:@"dospad.cfg"];
@@ -512,22 +596,25 @@ jobs:
               [fm removeItemAtPath:activeConfig error:nil];
 
               NSError *configError = nil;
+
               [fm copyItemAtPath:sourceConfig
                           toPath:activeConfig
                            error:&configError];
 
               if (configError)
-                  NSLog(@"MK CONFIG ERROR: %@", configError);
+                  NSLog(@"MK TRILOGY CONFIG ERROR: %@", configError);
 
-              // Do not force fullscreen during DOS text/DOS4GW startup.
-              // The game UI enables it a few seconds later.
               [NSUserDefaults.standardUserDefaults
                setBool:NO
                forKey:@"MKFullscreenReady"];
 
               [NSUserDefaults.standardUserDefaults
-               setObject:mode
+               setObject:@"CLASSIC"
                forKey:@"MKRenderMode"];
+
+              [NSUserDefaults.standardUserDefaults
+               setObject:game
+               forKey:@"MKSelectedGame"];
 
               [NSUserDefaults.standardUserDefaults synchronize];
 
@@ -543,13 +630,18 @@ jobs:
               }];
           }
 
-          // END MK FINAL LAUNCH
-              '''
+          // END MK TRILOGY CLASSIC LAUNCH
 
-              text = text.replace(method_marker, methods + method_marker, 1)
+          '''
+
+              text = text.replace(
+                  method_marker,
+                  methods + method_marker,
+                  1
+              )
+
               delegate.write_text(text, encoding="utf-8")
 
-          # ------------------------------------------------------
           # 3) STABLE NATIVE FULLSCREEN + TOUCH
           # ------------------------------------------------------
 
@@ -763,77 +855,6 @@ jobs:
 
               // Re-run native iDOS layout after MK1 has entered graphics.
               [self updateScreen];
-
-              NSString *mkVisualMode =
-                  [NSUserDefaults.standardUserDefaults
-                   stringForKey:@"MKRenderMode"];
-
-              BOOL mkRemastered =
-                  [mkVisualMode isEqualToString:@"REMASTERED"];
-
-              // Remove any old remaster overlay first.
-              NSArray *oldLayers =
-                  [self.screenView.layer.sublayers copy];
-
-              for (CALayer *layer in oldLayers)
-              {
-                  if ([layer.name isEqualToString:@"MK_REMASTER_VIGNETTE"])
-                  {
-                      [layer removeFromSuperlayer];
-                  }
-              }
-
-              if (mkRemastered)
-              {
-                  // Stable two-stage remaster:
-                  // 1) DOSBox HQ2X
-                  // 2) smooth final iPhone sampling
-                  self.screenView.layer.magnificationFilter =
-                      kCAFilterLinear;
-
-                  self.screenView.layer.minificationFilter =
-                      kCAFilterLinear;
-
-                  self.screenView.layer.shouldRasterize = NO;
-
-                  // Very light vignette. This does NOT touch the DOS
-                  // framebuffer, so it cannot create the HQ3X-style
-                  // horizontal corruption.
-                  CAGradientLayer *vignette =
-                      [CAGradientLayer layer];
-
-                  vignette.name = @"MK_REMASTER_VIGNETTE";
-                  vignette.frame = self.screenView.bounds;
-                  vignette.autoresizingMask =
-                      kCALayerWidthSizable | kCALayerHeightSizable;
-
-                  vignette.type = kCAGradientLayerRadial;
-
-                  vignette.startPoint = CGPointMake(0.50, 0.48);
-                  vignette.endPoint   = CGPointMake(1.00, 1.00);
-
-                  vignette.colors = @[
-                      (id)[UIColor colorWithWhite:0.0 alpha:0.00].CGColor,
-                      (id)[UIColor colorWithWhite:0.0 alpha:0.00].CGColor,
-                      (id)[UIColor colorWithWhite:0.0 alpha:0.14].CGColor
-                  ];
-
-                  vignette.locations = @[@0.0, @0.62, @1.0];
-
-                  [self.screenView.layer addSublayer:vignette];
-              }
-              else
-              {
-                  // Original sharp DOS pixels.
-                  self.screenView.layer.magnificationFilter =
-                      kCAFilterNearest;
-
-                  self.screenView.layer.minificationFilter =
-                      kCAFilterNearest;
-
-                  self.screenView.layer.shouldRasterize = NO;
-              }
-
               [self mkStableHideIDOSChrome];
           }
 
@@ -950,8 +971,8 @@ jobs:
 
           test -n "$PLIST"
 
-          plutil -replace CFBundleDisplayName -string "MK1 Remastered" "$PLIST" || true
-          plutil -replace CFBundleName -string "MK1 Remastered" "$PLIST" || true
+          plutil -replace CFBundleDisplayName -string "MK Trilogy" "$PLIST" || true
+          plutil -replace CFBundleName -string "MK Trilogy" "$PLIST" || true
 
           /usr/libexec/PlistBuddy -c "Delete :UISupportedInterfaceOrientations" "$PLIST" || true
           /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations array" "$PLIST"
@@ -1118,52 +1139,36 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.10.1 patches
+      - name: Verify Trilogy Classic patches
         run: |
           set -e
+
+          echo "===== VERIFY ORIGINAL GAMES ====="
+          test -f game/MK1/MK1.EXE
+          test -f game/MK2/MK2.EXE
+          test -f game/MK3/MK3.EXE
 
           echo "===== VERIFY AUTOBOOT ====="
           grep -n "MKFINAL_AUTOBOOT" dospad/dospad/Main/DOSPadEmulator.m
 
-          echo "===== VERIFY MENU / CONFIG ====="
-          grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
-          grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
+          echo "===== VERIFY TRILOGY MENU ====="
+          grep -n "MKTRILOGY_MENU" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "mkTrilogyLaunchGame" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "MKSelectedGame" dospad/dospad/Main/DPAppDelegate.m
 
-          echo "===== VERIFY STABLE SCREEN PATCH ====="
+          echo "===== VERIFY CLASSIC CONFIGS ====="
+          grep -n "^scaler=none$" game/MK1/CLASSIC.CFG
+          grep -n "^scaler=none$" game/MK2/CLASSIC.CFG
+          grep -n "^scaler=none$" game/MK3/CLASSIC.CFG
+
+          echo "===== VERIFY STABLE SCREEN / TOUCH ====="
           grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "MKFullscreenReady" dospad/dospad/Main/DPAppDelegate.m
           grep -n "mkStableEnableFullscreen" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "kCAFilterLinear" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "MK_REMASTER_VIGNETTE" dospad/dospad/Main/DPEmulatorViewController.m
 
-          echo "===== VERIFY REMASTER CONFIG ====="
-          grep -n "^scaler=hq2x$" game/MK1/REMASTER.CFG
-          grep -n "^aspect=true$" game/MK1/REMASTER.CFG
-          grep -n "^frameskip=0$" game/MK1/REMASTER.CFG
-          grep -n "^scaler=none$" game/MK1/CLASSIC.CFG
+          echo "TRILOGY CLASSIC PATCHES OK"
 
-          echo "===== VERIFY NO FORCED CPU OVERRIDES ====="
-          if grep -q '^core=dynamic$' game/MK1/CLASSIC.CFG &&              grep -q '^cycles=max 95%$' game/MK1/CLASSIC.CFG; then
-            echo "INFO: stock config itself contains these values; no YAML override was added."
-          else
-            echo "CPU/timing left at stock iDOS config values."
-          fi
-
-          echo "===== VERIFY REMOVED EXPERIMENTAL PATCHES ====="
-          if grep -q "MK_REAL_RENDER_FPS" dospad/dospad/Main/DPEmulatorViewController.m 2>/dev/null; then
-            echo "ERROR: OLD FPS PATCH STILL PRESENT"
-            exit 1
-          fi
-
-          if grep -q "MKRenderFrameCounter" dospad/dospad/Main/DPEmulatorViewController.m 2>/dev/null; then
-            echo "ERROR: OLD FPS COUNTER STILL PRESENT"
-            exit 1
-          fi
-
-          echo "V0.10.1 PATCHES OK"
-
-      - name: Build MK1 v0.10.1 engine
+      - name: Build MK Trilogy Classic engine
         run: |
           set +e
           set -o pipefail
@@ -1181,7 +1186,7 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            PRODUCT_BUNDLE_IDENTIFIER="com.mk1.v09.remastered" \
+            PRODUCT_BUNDLE_IDENTIFIER="com.mktrilogy.classic.v01" \
             build \
             2>&1 | tee output/xcodebuild.log
 
@@ -1222,25 +1227,38 @@ jobs:
           echo "$APP" > output/app-path.txt
           echo "APP=$APP"
 
-      - name: Put complete MK1 inside app
+      - name: Put complete MK Trilogy inside app
         run: |
           set -e
 
           APP=$(cat output/app-path.txt)
 
           rm -rf "$APP/MKGame"
-          mkdir -p "$APP/MKGame"
-          cp -R game/MK1/. "$APP/MKGame/"
+          rm -rf "$APP/MKGames"
+
+          mkdir -p "$APP/MKGames/MK1"
+          mkdir -p "$APP/MKGames/MK2"
+          mkdir -p "$APP/MKGames/MK3"
+
+          cp -R game/MK1/. "$APP/MKGames/MK1/"
+          cp -R game/MK2/. "$APP/MKGames/MK2/"
+          cp -R game/MK3/. "$APP/MKGames/MK3/"
 
           rm -rf "$APP/PlugIns"
 
-          test -f "$APP/MKGame/MK1.EXE"
-          test -f "$APP/MKGame/MKAUTO.TXT"
-          test -f "$APP/MKGame/CLASSIC.CFG"
-          test -f "$APP/MKGame/REMASTER.CFG"
+          test -f "$APP/MKGames/MK1/MK1.EXE"
+          test -f "$APP/MKGames/MK2/MK2.EXE"
+          test -f "$APP/MKGames/MK3/MK3.EXE"
 
-          echo "GAME FILES=$(find "$APP/MKGame" -type f | wc -l | tr -d ' ')"
-          echo "GRA FILES=$(find "$APP/MKGame" -type f -iname '*.GRA' | wc -l | tr -d ' ')"
+          test -f "$APP/MKGames/MK1/MKAUTO.TXT"
+          test -f "$APP/MKGames/MK2/MKAUTO.TXT"
+          test -f "$APP/MKGames/MK3/MKAUTO.TXT"
+
+          echo "MK1 FILES=$(find "$APP/MKGames/MK1" -type f | wc -l | tr -d ' ')"
+          echo "MK2 FILES=$(find "$APP/MKGames/MK2" -type f | wc -l | tr -d ' ')"
+          echo "MK3 FILES=$(find "$APP/MKGames/MK3" -type f | wc -l | tr -d ' ')"
+
+          du -sh "$APP"
 
       - name: Create build info
         run: |
@@ -1249,22 +1267,29 @@ jobs:
           APP=$(cat output/app-path.txt)
 
           {
-            echo "MK1 v0.10.1 REMASTER ALPHA"
+            echo "============================================"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.1"
+            echo "============================================"
             echo
-            echo "ORIGINAL MK1.EXE: YES"
-            echo "FULL ORIGINAL GAME DATA: YES"
-            echo "CLASSIC: scaler=none + nearest final scale"
-            echo "REMASTERED: scaler=hq2x + aspect correction + linear final scale + light vignette"
-            echo "CORE: simple"
-            echo "CYCLES: max 95%"
-            echo "FPS COUNTER: DISABLED FOR STABILITY"
-            echo "ACTIVE CONFIG: MK1Final/config/dospad.cfg"
-            echo "REMASTERED NOTE: stable visual remaster; same original MK1 game assets"
-            echo "CLEAN GAME VIEW: YES"
-            echo "LANDSCAPE ONLY: YES"
+            echo "MK1: ORIGINAL MK1.EXE"
+            echo "MK2: ORIGINAL MK2.EXE"
+            echo "MK3: ORIGINAL MK3.EXE"
+            echo
+            echo "MODE: CLASSIC ONLY"
+            echo "SCALER: none"
+            echo "CPU/TIMING: STOCK IDOS SETTINGS"
+            echo "CLEAN IDOS GAME VIEW: YES"
+            echo "TOUCH OVERLAY: YES"
+            echo "LANDSCAPE: YES"
             echo "SCORPION DARK ICON: YES"
-            echo "REPTILE/GORO/SHANG TSUNG/FATALITIES: original MK1 logic"
-            echo "GAME FILES=$(find "$APP/MKGame" -type f | wc -l | tr -d ' ')"
+            echo
+            echo "NOTE: first Trilogy build reuses the working"
+            echo "MK1 touch scancodes for all three games."
+            echo "MK2/MK3 controls need on-device verification."
+            echo
+            echo "MK1 FILES=$(find "$APP/MKGames/MK1" -type f | wc -l | tr -d ' ')"
+            echo "MK2 FILES=$(find "$APP/MKGames/MK2" -type f | wc -l | tr -d ' ')"
+            echo "MK3 FILES=$(find "$APP/MKGames/MK3" -type f | wc -l | tr -d ' ')"
           } > output/BUILD-INFO.txt
 
           cat output/BUILD-INFO.txt
@@ -1285,17 +1310,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.10.1-REMASTER-STABLE-KSign.ipa
+            output/MK-Trilogy-Classic-v0.1-KSign.ipa
 
-          ls -lh output/MK1-v0.10.1-REMASTER-STABLE-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.1-KSign.ipa
 
-      - name: Upload MK1 v0.10.1 Remaster Stable
+      - name: Upload MK Trilogy Classic v0.1
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.10.1-REMASTER-STABLE-KSign
+          name: MK-Trilogy-Classic-v0.1-KSign
           path: |
-            output/MK1-v0.10.1-REMASTER-STABLE-KSign.ipa
+            output/MK-Trilogy-Classic-v0.1-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1303,7 +1328,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1-STABLE-FAIL
+          name: MK-Trilogy-Classic-v0.1-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
