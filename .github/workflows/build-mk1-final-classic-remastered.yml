@@ -1,4 +1,4 @@
-name: Build MK1 v0.9.1b Stable Fix Classic + Remastered
+name: Build MK1 v0.9.1c Stable Fix Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -1003,23 +1003,35 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.9 patches
+      - name: Verify v0.9.1c patches
         run: |
           set -e
-          RENDER_CPP=$(find dospad -type f -path "*/src/gui/render.cpp" | head -1)
-          test -n "$RENDER_CPP"
 
-          grep -n "MK_REAL_RENDER_FPS" "$RENDER_CPP"
+          echo "===== VERIFY AUTOBOOT ====="
           grep -n "MKFINAL_AUTOBOOT" dospad/dospad/Main/DOSPadEmulator.m
-          grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
-          grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "MKSTABLE_FILTER" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
-                    grep -n "MKRenderFrameCounter" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
-          echo "V0.9 PATCHES OK"
 
-      - name: Build MK1 v0.9 engine
+          echo "===== VERIFY MENU / CONFIG ====="
+          grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
+
+          echo "===== VERIFY STABLE SCREEN PATCH ====="
+          grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
+
+          echo "===== VERIFY REMOVED EXPERIMENTAL PATCHES ====="
+          if grep -q "MK_REAL_RENDER_FPS" dospad/dospad/Main/DPEmulatorViewController.m 2>/dev/null; then
+            echo "ERROR: OLD FPS PATCH STILL PRESENT"
+            exit 1
+          fi
+
+          if grep -q "MKRenderFrameCounter" dospad/dospad/Main/DPEmulatorViewController.m 2>/dev/null; then
+            echo "ERROR: OLD FPS COUNTER STILL PRESENT"
+            exit 1
+          fi
+
+          echo "V0.9.1c PATCHES OK"
+
+      - name: Build MK1 v0.9.1c engine
         run: |
           set +e
           set -o pipefail
@@ -1141,17 +1153,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9.1b-STABLE-KSign.ipa
+            output/MK1-v0.9.1c-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.9.1b-STABLE-KSign.ipa
+          ls -lh output/MK1-v0.9.1c-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.9.1b Stable
+      - name: Upload MK1 v0.9.1c Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1b-STABLE-KSign
+          name: MK1-v0.9.1c-STABLE-KSign
           path: |
-            output/MK1-v0.9.1b-STABLE-KSign.ipa
+            output/MK1-v0.9.1c-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
