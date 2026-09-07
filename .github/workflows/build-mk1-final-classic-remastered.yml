@@ -1,4 +1,4 @@
-name: Build MK1 v0.9.1c Stable Fix Classic + Remastered
+name: Build MK1 v0.9.1d Delayed Fullscreen Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -514,9 +514,16 @@ jobs:
               if (configError)
                   NSLog(@"MK CONFIG ERROR: %@", configError);
 
+              // Do not force fullscreen during DOS text/DOS4GW startup.
+              // The game UI enables it a few seconds later.
+              [NSUserDefaults.standardUserDefaults
+               setBool:NO
+               forKey:@"MKFullscreenReady"];
+
               [NSUserDefaults.standardUserDefaults
                setObject:mode
                forKey:@"MKRenderMode"];
+
               [NSUserDefaults.standardUserDefaults synchronize];
 
               [DOSPadEmulator sharedInstance].workingDirectory =
@@ -593,10 +600,18 @@ jobs:
               [NSUserDefaults.standardUserDefaults
                stringForKey:@"MKRenderMode"];
 
-          if (mkMode.length > 0 && !_currentScene.isPortrait)
+          BOOL mkFullscreenReady =
+              [NSUserDefaults.standardUserDefaults
+               boolForKey:@"MKFullscreenReady"];
+
+          if (
+              mkMode.length > 0
+              && mkFullscreenReady
+              && !_currentScene.isPortrait
+          )
           {
-              // Use iDOS's own scaling/centering code, but fill the
-              // complete available landscape area.
+              // Only force fullscreen after the DOS/DOS4GW startup
+              // has had time to switch into MK1's graphics mode.
               [self fillScreen:viewRect];
               return;
           }
@@ -733,6 +748,19 @@ jobs:
               }
           }
 
+          - (void)mkStableEnableFullscreen
+          {
+              [NSUserDefaults.standardUserDefaults
+               setBool:YES
+               forKey:@"MKFullscreenReady"];
+
+              [NSUserDefaults.standardUserDefaults synchronize];
+
+              // Re-run native iDOS layout after MK1 has entered graphics.
+              [self updateScreen];
+              [self mkStableHideIDOSChrome];
+          }
+
           - (void)mkStableInstallControls
           {
               if (!_rootContainer)
@@ -787,9 +815,20 @@ jobs:
               mode.frame = CGRectMake(w / 2.0 - 64, 8, 128, 28);
               [_rootContainer addSubview:mode];
 
-              // Native iDOS scaling only. No custom transform here.
-              [self updateScreen];
+              // Keep native DOS layout during the text/DOS4GW startup.
+              // Then enable MK fullscreen once, after the game has had time
+              // to enter its VGA graphics mode.
               [self mkStableHideIDOSChrome];
+
+              [NSObject
+               cancelPreviousPerformRequestsWithTarget:self
+               selector:@selector(mkStableEnableFullscreen)
+               object:nil];
+
+              [self
+               performSelector:@selector(mkStableEnableFullscreen)
+               withObject:nil
+               afterDelay:3.0];
           }
 
           // END MKSTABLE_GAME_UI
@@ -1003,7 +1042,7 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.9.1c patches
+      - name: Verify v0.9.1d patches
         run: |
           set -e
 
@@ -1017,6 +1056,8 @@ jobs:
           echo "===== VERIFY STABLE SCREEN PATCH ====="
           grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MKFullscreenReady" dospad/dospad/Main/DPAppDelegate.m
+          grep -n "mkStableEnableFullscreen" dospad/dospad/Main/DPEmulatorViewController.m
 
           echo "===== VERIFY REMOVED EXPERIMENTAL PATCHES ====="
           if grep -q "MK_REAL_RENDER_FPS" dospad/dospad/Main/DPEmulatorViewController.m 2>/dev/null; then
@@ -1029,9 +1070,9 @@ jobs:
             exit 1
           fi
 
-          echo "V0.9.1c PATCHES OK"
+          echo "V0.9.1d PATCHES OK"
 
-      - name: Build MK1 v0.9.1c engine
+      - name: Build MK1 v0.9.1d engine
         run: |
           set +e
           set -o pipefail
@@ -1153,17 +1194,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9.1c-STABLE-KSign.ipa
+            output/MK1-v0.9.1d-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.9.1c-STABLE-KSign.ipa
+          ls -lh output/MK1-v0.9.1d-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.9.1c Stable
+      - name: Upload MK1 v0.9.1d Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1c-STABLE-KSign
+          name: MK1-v0.9.1d-STABLE-KSign
           path: |
-            output/MK1-v0.9.1c-STABLE-KSign.ipa
+            output/MK1-v0.9.1d-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
