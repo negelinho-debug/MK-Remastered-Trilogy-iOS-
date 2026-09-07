@@ -1,4 +1,4 @@
-name: Build MK Trilogy Classic v0.3 MK2 + MK3 Fix
+name: Build MK Trilogy Classic v0.4 MK2 Reset + MK3 Restart
 
 on:
   workflow_dispatch:
@@ -150,6 +150,9 @@ jobs:
           normalize_game MK1 MK1.EXE
           normalize_game MK2 MK2.EXE
           normalize_game MK3 MK3.EXE
+
+          echo "===== RESET MK2 SAVED CONTROLS ====="
+          find game/MK2 -type f \( -iname "CMOS" -o -iname "CMOS.*" \) -print -delete || true
 
           echo "===== TRILOGY READY ====="
           ls -lh game/MK1/MK1.EXE
@@ -386,6 +389,13 @@ jobs:
         run: |
           set -e
 
+          cat > game/MK3/RUNMK3.BAT <<'EOF'
+          @ECHO OFF
+          :MK3LOOP
+          MK3.EXE
+          GOTO MK3LOOP
+          EOF
+
           cat > game/MK1/MKAUTO.TXT <<'EOF'
           C:
           CD \
@@ -403,7 +413,7 @@ jobs:
             cat <<'EOF'
           C:
           CD \
-          MK3.EXE
+          RUNMK3.BAT
           EOF
           } > game/MK3/MKAUTO.TXT
 
@@ -1062,11 +1072,11 @@ jobs:
               NSInteger keyHK  = isMK3 ? 94 : 12;
               NSInteger keyLK  = isMK3 ? 91 : 16;
 
-              // MK1 working build: F1
-              // MK2 DOS: Enter
-              // MK3 DOS P1: Numpad Enter
+              // MK1 DOS: F1 = Player 1 Start
+              // MK2 DOS: F1 = Player 1 Start
+              // MK3 menus / fighter select: regular Enter
               NSInteger keyStart =
-                  isMK3 ? 88 : (isMK2 ? 40 : 58);
+                  isMK3 ? 40 : 58;
 
               [_rootContainer addSubview:
                [self mkStableButton:@"▲" frame:CGRectMake(62, h - 150, d, d) key:keyUp]];
@@ -1108,7 +1118,17 @@ jobs:
                [self mkStableButton:@"START" frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32) key:keyStart]];
 
               [_rootContainer addSubview:
-               [self mkStableButton:@"ESC" frame:CGRectMake(8, 8, 50, 30) key:41]];
+               [self mkStableButton:(isMK3 ? @"MENU" : @"ESC")
+                              frame:CGRectMake(8, 8, 58, 30)
+                                key:41]];
+
+              if (isMK2)
+              {
+                  [_rootContainer addSubview:
+                   [self mkStableButton:@"SETUP"
+                                  frame:CGRectMake(72, 8, 64, 30)
+                                    key:67]];
+              }
 
               UILabel *mode = [[UILabel alloc] init];
               mode.tag = 9912;
@@ -1382,8 +1402,22 @@ jobs:
           echo "===== VERIFY MK2/MK3 KEYMAP ====="
           grep -n "BOOL isMK2" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "BOOL isMK3" dospad/dospad/Main/DPEmulatorViewController.m
-          grep -n "isMK2 ? 40 : 58" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "isMK3 ? 40 : 58" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n 'mkStableButton:@"RUN"' dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n 'mkStableButton:@"SETUP"' dospad/dospad/Main/DPEmulatorViewController.m
+
+          echo "===== VERIFY MK2 CMOS RESET ====="
+          if find game/MK2 -type f \( -iname "CMOS" -o -iname "CMOS.*" \) | grep .; then
+            echo "ERROR: MK2 CMOS STILL PRESENT"
+            exit 1
+          fi
+          echo "MK2 CMOS RESET OK"
+
+          echo "===== VERIFY MK3 RESTART LOOP ====="
+          test -f game/MK3/RUNMK3.BAT
+          grep -n ":MK3LOOP" game/MK3/RUNMK3.BAT
+          grep -n "GOTO MK3LOOP" game/MK3/RUNMK3.BAT
+          grep -n "RUNMK3.BAT" game/MK3/MKAUTO.TXT
 
           echo "===== VERIFY MK3 CD ====="
           test -s game/MK3/MK3-CD-MOUNT.TXT
@@ -1498,7 +1532,7 @@ jobs:
 
           {
             echo "============================================"
-            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.3"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.4"
             echo "============================================"
             echo
             echo "MK1: ORIGINAL MK1.EXE"
@@ -1540,17 +1574,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Trilogy-Classic-v0.3-KSign.ipa
+            output/MK-Trilogy-Classic-v0.4-KSign.ipa
 
-          ls -lh output/MK-Trilogy-Classic-v0.3-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.4-KSign.ipa
 
-      - name: Upload MK Trilogy Classic v0.3 Controls Fix
+      - name: Upload MK Trilogy Classic v0.4
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.3-KSign
+          name: MK-Trilogy-Classic-v0.4-KSign
           path: |
-            output/MK-Trilogy-Classic-v0.3-KSign.ipa
+            output/MK-Trilogy-Classic-v0.4-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1558,7 +1592,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.3-FAIL
+          name: MK-Trilogy-Classic-v0.4-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
