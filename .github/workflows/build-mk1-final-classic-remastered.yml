@@ -1,4 +1,4 @@
-name: Build MK1 v0.10 Remaster Alpha
+name: Build MK1 v0.10.1.1 Remaster Stable
 
 on:
   workflow_dispatch:
@@ -182,14 +182,14 @@ jobs:
           # core/cycles edits were not active; iDOS was using its bundled
           # CPU/timing defaults.
           #
-          # v0.10 restores that known-good CPU behaviour and changes
+          # v0.10.1 restores that known-good CPU behaviour and changes
           # ONLY the visual scaler between modes.
           configs = {
               "game/MK1/CLASSIC.CFG": {
                   ("render", "scaler"): "none",
               },
               "game/MK1/REMASTER.CFG": {
-                  ("render", "scaler"): "hq3x",
+                  ("render", "scaler"): "hq2x",
                   ("render", "aspect"): "true",
                   ("render", "frameskip"): "0",
               },
@@ -632,7 +632,7 @@ jobs:
           # Do not patch scaleScreenViewToSize in this stable revision.
           # That removes another fragile regex and keeps native iDOS
           # screen geometry untouched. CLASSIC vs REMASTERED stays in
-          # DOSBox configs: scaler=none vs scaler=hq3x.
+          # DOSBox configs: scaler=none vs scaler=hq2x.
 
           if "MKSTABLE_GAME_UI" not in text:
               marker = '// MARK: DPGamepadDelegate'
@@ -771,17 +771,68 @@ jobs:
               BOOL mkRemastered =
                   [mkVisualMode isEqualToString:@"REMASTERED"];
 
-              // CLASSIC keeps hard original pixels.
-              // REMASTERED uses the DOSBox HQ3X result and smooth final
-              // sampling on the iPhone display.
-              self.screenView.layer.magnificationFilter =
-                  mkRemastered ? kCAFilterLinear : kCAFilterNearest;
+              // Remove any old remaster overlay first.
+              NSArray *oldLayers =
+                  [self.screenView.layer.sublayers copy];
 
-              self.screenView.layer.minificationFilter =
-                  mkRemastered ? kCAFilterLinear : kCAFilterNearest;
+              for (CALayer *layer in oldLayers)
+              {
+                  if ([layer.name isEqualToString:@"MK_REMASTER_VIGNETTE"])
+                  {
+                      [layer removeFromSuperlayer];
+                  }
+              }
 
-              self.screenView.layer.shouldRasterize =
-                  mkRemastered ? NO : YES;
+              if (mkRemastered)
+              {
+                  // Stable two-stage remaster:
+                  // 1) DOSBox HQ2X
+                  // 2) smooth final iPhone sampling
+                  self.screenView.layer.magnificationFilter =
+                      kCAFilterLinear;
+
+                  self.screenView.layer.minificationFilter =
+                      kCAFilterLinear;
+
+                  self.screenView.layer.shouldRasterize = NO;
+
+                  // Very light vignette. This does NOT touch the DOS
+                  // framebuffer, so it cannot create the HQ3X-style
+                  // horizontal corruption.
+                  CAGradientLayer *vignette =
+                      [CAGradientLayer layer];
+
+                  vignette.name = @"MK_REMASTER_VIGNETTE";
+                  vignette.frame = self.screenView.bounds;
+                  vignette.autoresizingMask =
+                      kCALayerWidthSizable | kCALayerHeightSizable;
+
+                  vignette.type = kCAGradientLayerRadial;
+
+                  vignette.startPoint = CGPointMake(0.50, 0.48);
+                  vignette.endPoint   = CGPointMake(1.00, 1.00);
+
+                  vignette.colors = @[
+                      (id)[UIColor colorWithWhite:0.0 alpha:0.00].CGColor,
+                      (id)[UIColor colorWithWhite:0.0 alpha:0.00].CGColor,
+                      (id)[UIColor colorWithWhite:0.0 alpha:0.14].CGColor
+                  ];
+
+                  vignette.locations = @[@0.0, @0.62, @1.0];
+
+                  [self.screenView.layer addSublayer:vignette];
+              }
+              else
+              {
+                  // Original sharp DOS pixels.
+                  self.screenView.layer.magnificationFilter =
+                      kCAFilterNearest;
+
+                  self.screenView.layer.minificationFilter =
+                      kCAFilterNearest;
+
+                  self.screenView.layer.shouldRasterize = NO;
+              }
 
               [self mkStableHideIDOSChrome];
           }
@@ -1067,7 +1118,7 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.10 patches
+      - name: Verify v0.10.1 patches
         run: |
           set -e
 
@@ -1084,9 +1135,10 @@ jobs:
           grep -n "MKFullscreenReady" dospad/dospad/Main/DPAppDelegate.m
           grep -n "mkStableEnableFullscreen" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "kCAFilterLinear" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "MK_REMASTER_VIGNETTE" dospad/dospad/Main/DPEmulatorViewController.m
 
           echo "===== VERIFY REMASTER CONFIG ====="
-          grep -n "^scaler=hq3x$" game/MK1/REMASTER.CFG
+          grep -n "^scaler=hq2x$" game/MK1/REMASTER.CFG
           grep -n "^aspect=true$" game/MK1/REMASTER.CFG
           grep -n "^frameskip=0$" game/MK1/REMASTER.CFG
           grep -n "^scaler=none$" game/MK1/CLASSIC.CFG
@@ -1109,9 +1161,9 @@ jobs:
             exit 1
           fi
 
-          echo "V0.10 PATCHES OK"
+          echo "V0.10.1 PATCHES OK"
 
-      - name: Build MK1 v0.10 engine
+      - name: Build MK1 v0.10.1 engine
         run: |
           set +e
           set -o pipefail
@@ -1197,17 +1249,17 @@ jobs:
           APP=$(cat output/app-path.txt)
 
           {
-            echo "MK1 v0.10 REMASTER ALPHA"
+            echo "MK1 v0.10.1 REMASTER ALPHA"
             echo
             echo "ORIGINAL MK1.EXE: YES"
             echo "FULL ORIGINAL GAME DATA: YES"
             echo "CLASSIC: scaler=none + nearest final scale"
-            echo "REMASTERED: scaler=hq3x + aspect correction + linear final scale"
+            echo "REMASTERED: scaler=hq2x + aspect correction + linear final scale + light vignette"
             echo "CORE: simple"
             echo "CYCLES: max 95%"
             echo "FPS COUNTER: DISABLED FOR STABILITY"
             echo "ACTIVE CONFIG: MK1Final/config/dospad.cfg"
-            echo "REMASTERED NOTE: visual remaster stage 1; same original game assets"
+            echo "REMASTERED NOTE: stable visual remaster; same original MK1 game assets"
             echo "CLEAN GAME VIEW: YES"
             echo "LANDSCAPE ONLY: YES"
             echo "SCORPION DARK ICON: YES"
@@ -1233,17 +1285,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.10-REMASTER-ALPHA-KSign.ipa
+            output/MK1-v0.10.1-REMASTER-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.10-REMASTER-ALPHA-KSign.ipa
+          ls -lh output/MK1-v0.10.1-REMASTER-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.10 Remaster Alpha
+      - name: Upload MK1 v0.10.1 Remaster Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.10-REMASTER-ALPHA-KSign
+          name: MK1-v0.10.1-REMASTER-STABLE-KSign
           path: |
-            output/MK1-v0.10-REMASTER-ALPHA-KSign.ipa
+            output/MK1-v0.10.1-REMASTER-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
