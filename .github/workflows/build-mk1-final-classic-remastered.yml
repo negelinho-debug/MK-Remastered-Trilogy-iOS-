@@ -1,4 +1,4 @@
-name: Build MK Trilogy Classic v0.2 Controls Fix
+name: Build MK Trilogy Classic v0.3 MK2 + MK3 Fix
 
 on:
   workflow_dispatch:
@@ -156,6 +156,173 @@ jobs:
           ls -lh game/MK2/MK2.EXE
           ls -lh game/MK3/MK3.EXE
 
+      - name: Prepare MK3 CD image
+        run: |
+          set -e
+
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+          import shutil
+
+          root = Path("game/MK3")
+          out = root / "CDIMAGE"
+
+          if out.exists():
+              shutil.rmtree(out)
+          out.mkdir(parents=True)
+
+          cues = [
+              p for p in root.rglob("*")
+              if p.is_file()
+              and p.suffix.lower() == ".cue"
+              and out not in p.parents
+          ]
+
+          isos = [
+              p for p in root.rglob("*")
+              if p.is_file()
+              and p.suffix.lower() == ".iso"
+              and out not in p.parents
+          ]
+
+          def case_insensitive_child(folder: Path, name: str):
+              direct = folder / name
+              if direct.exists():
+                  return direct
+
+              wanted = Path(name).name.lower()
+
+              for p in folder.iterdir():
+                  if p.name.lower() == wanted:
+                      return p
+
+              return None
+
+          if cues:
+              cue = cues[0]
+              raw = cue.read_text(
+                  encoding="latin-1",
+                  errors="ignore"
+              )
+
+              referenced = re.findall(
+                  r'(?im)^\s*FILE\s+"([^"]+)"\s+\S+',
+                  raw
+              )
+
+              replacements = {}
+
+              for ref in referenced:
+                  source = case_insensitive_child(
+                      cue.parent,
+                      ref
+                  )
+
+                  if source is None:
+                      # Last-resort search by basename.
+                      matches = [
+                          p for p in root.rglob("*")
+                          if p.is_file()
+                          and p.name.lower()
+                              == Path(ref).name.lower()
+                          and out not in p.parents
+                      ]
+
+                      if matches:
+                          source = matches[0]
+
+                  if source is None:
+                      raise SystemExit(
+                          f"ERROR: CUE references missing file: {ref}"
+                      )
+
+                  dest_name = source.name
+                  shutil.copy2(
+                      source,
+                      out / dest_name
+                  )
+
+                  replacements[ref] = dest_name
+
+              rewritten = raw
+
+              for old, new in replacements.items():
+                  rewritten = rewritten.replace(
+                      f'"{old}"',
+                      f'"{new}"'
+                  )
+
+              cue_name = cue.name
+
+              (out / cue_name).write_text(
+                  rewritten,
+                  encoding="latin-1"
+              )
+
+              mount = (
+                  f'IMGMOUNT D C:\\CDIMAGE\\{cue_name} '
+                  f'-t iso'
+              )
+
+              (root / "MK3-CD-MOUNT.TXT").write_text(
+                  mount + "\n",
+                  encoding="ascii"
+              )
+
+              print("MK3 CUE:", cue)
+              print("MK3 CD MOUNT:", mount)
+              print(
+                  "CD FILES:",
+                  [p.name for p in out.iterdir()]
+              )
+
+          elif isos:
+              iso = isos[0]
+              dest = out / "MK3.ISO"
+              shutil.copy2(iso, dest)
+
+              mount = (
+                  r'IMGMOUNT D C:\CDIMAGE\MK3.ISO -t iso'
+              )
+
+              (root / "MK3-CD-MOUNT.TXT").write_text(
+                  mount + "\n",
+                  encoding="ascii"
+              )
+
+              print("MK3 ISO:", iso)
+              print("MK3 CD MOUNT:", mount)
+
+          else:
+              gog = [
+                  p for p in root.rglob("*")
+                  if p.is_file()
+                  and p.suffix.lower() == ".gog"
+              ]
+
+              if gog:
+                  print(
+                      "ERROR: MK3 .GOG image exists but no .CUE was found."
+                  )
+                  print(
+                      "A proper CUE is needed to mount the MK3 CD safely."
+                  )
+              else:
+                  print(
+                      "ERROR: NO MK3 CUE/ISO CD IMAGE FOUND."
+                  )
+
+              raise SystemExit(1)
+          PY
+
+          test -s game/MK3/MK3-CD-MOUNT.TXT
+
+          echo "===== MK3 CD MOUNT ====="
+          cat game/MK3/MK3-CD-MOUNT.TXT
+          echo "===== MK3 CDIMAGE ====="
+          find game/MK3/CDIMAGE -maxdepth 1 -type f -print
+
       - name: Clone iDOS
         run: |
           set -e
@@ -231,11 +398,14 @@ jobs:
           MK2.EXE
           EOF
 
-          cat > game/MK3/MKAUTO.TXT <<'EOF'
+          {
+            cat game/MK3/MK3-CD-MOUNT.TXT
+            cat <<'EOF'
           C:
           CD \
           MK3.EXE
           EOF
+          } > game/MK3/MKAUTO.TXT
 
           echo "===== MK1 AUTOBOOT ====="
           cat game/MK1/MKAUTO.TXT
@@ -875,6 +1045,9 @@ jobs:
                    stringForKey:@"MKSelectedGame"]
                   ?: @"MK1";
 
+              BOOL isMK2 =
+                  [selectedGame isEqualToString:@"MK2"];
+
               BOOL isMK3 =
                   [selectedGame isEqualToString:@"MK3"];
 
@@ -884,13 +1057,16 @@ jobs:
               NSInteger keyRight = isMK3 ? 79 : 6;
 
               NSInteger keyHP  = isMK3 ? 92 : 24;
-              NSInteger keyLP  = isMK3 ? 98 : 17;
+              NSInteger keyLP  = isMK3 ? 89 : 17;
               NSInteger keyBLK = isMK3 ? 90 : 13;
               NSInteger keyHK  = isMK3 ? 94 : 12;
               NSInteger keyLK  = isMK3 ? 91 : 16;
 
+              // MK1 working build: F1
+              // MK2 DOS: Enter
+              // MK3 DOS P1: Numpad Enter
               NSInteger keyStart =
-                  isMK3 ? 40 : 58;
+                  isMK3 ? 88 : (isMK2 ? 40 : 58);
 
               [_rootContainer addSubview:
                [self mkStableButton:@"▲" frame:CGRectMake(62, h - 150, d, d) key:keyUp]];
@@ -925,7 +1101,7 @@ jobs:
               if (isMK3)
               {
                   [_rootContainer addSubview:
-                   [self mkStableButton:@"RUN" frame:CGRectMake(ax + 100, h - 177, a, a) key:99]];
+                   [self mkStableButton:@"RUN" frame:CGRectMake(ax + 100, h - 177, a, a) key:93]];
               }
 
               [_rootContainer addSubview:
@@ -1203,9 +1379,17 @@ jobs:
           grep -n "^joysticktype=none$" game/MK2/CLASSIC.CFG
           grep -n "^joysticktype=none$" game/MK3/CLASSIC.CFG
 
-          echo "===== VERIFY MK3 KEYMAP ====="
+          echo "===== VERIFY MK2/MK3 KEYMAP ====="
+          grep -n "BOOL isMK2" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "BOOL isMK3" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n "isMK2 ? 40 : 58" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n 'mkStableButton:@"RUN"' dospad/dospad/Main/DPEmulatorViewController.m
+
+          echo "===== VERIFY MK3 CD ====="
+          test -s game/MK3/MK3-CD-MOUNT.TXT
+          grep -n "^IMGMOUNT D " game/MK3/MK3-CD-MOUNT.TXT
+          grep -n "^IMGMOUNT D " game/MK3/MKAUTO.TXT
+          find game/MK3/CDIMAGE -maxdepth 1 -type f | grep .
 
           echo "===== VERIFY STABLE SCREEN / TOUCH ====="
           grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
@@ -1314,7 +1498,7 @@ jobs:
 
           {
             echo "============================================"
-            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.2"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.3"
             echo "============================================"
             echo
             echo "MK1: ORIGINAL MK1.EXE"
@@ -1356,17 +1540,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Trilogy-Classic-v0.2-KSign.ipa
+            output/MK-Trilogy-Classic-v0.3-KSign.ipa
 
-          ls -lh output/MK-Trilogy-Classic-v0.2-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.3-KSign.ipa
 
-      - name: Upload MK Trilogy Classic v0.2 Controls Fix
+      - name: Upload MK Trilogy Classic v0.3 Controls Fix
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.2-KSign
+          name: MK-Trilogy-Classic-v0.3-KSign
           path: |
-            output/MK-Trilogy-Classic-v0.2-KSign.ipa
+            output/MK-Trilogy-Classic-v0.3-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1374,7 +1558,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.2-FAIL
+          name: MK-Trilogy-Classic-v0.3-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
