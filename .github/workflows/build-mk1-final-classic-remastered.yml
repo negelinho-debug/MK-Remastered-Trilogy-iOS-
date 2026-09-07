@@ -1,4 +1,4 @@
-name: Build MK Trilogy Classic v0.5 MK3 Boot + Exit Menu
+name: Build MK Trilogy Classic v0.5.1.1 Verify Fix
 
 on:
   workflow_dispatch:
@@ -1537,7 +1537,8 @@ jobs:
           echo "===== VERIFY MK3 CD ====="
           test -s game/MK3/MK3-CD-MOUNT.TXT
           grep -n "^IMGMOUNT D " game/MK3/MK3-CD-MOUNT.TXT
-          grep -n "^IMGMOUNT D " game/MK3/MKAUTO.TXT
+          grep -n "^IMGMOUNT D " game/MK3/MK3BOOT.BAT
+          grep -n 'C:\\MK3BOOT.BAT' game/MK3/MKAUTO.TXT
           find game/MK3/CDIMAGE -maxdepth 1 -type f | grep .
 
           echo "===== VERIFY STABLE SCREEN / TOUCH ====="
@@ -1647,7 +1648,7 @@ jobs:
 
           {
             echo "============================================"
-            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.5"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.5.1"
             echo "============================================"
             echo
             echo "MK1: ORIGINAL MK1.EXE"
@@ -1689,17 +1690,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Trilogy-Classic-v0.5-KSign.ipa
+            output/MK-Trilogy-Classic-v0.5.1-KSign.ipa
 
-          ls -lh output/MK-Trilogy-Classic-v0.5-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.5.1-KSign.ipa
 
-      - name: Upload MK Trilogy Classic v0.5 MK3 Boot + Exit Menu
+      - name: Upload MK Trilogy Classic v0.5.1
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.5-KSign
+          name: MK-Trilogy-Classic-v0.5.1-KSign
           path: |
-            output/MK-Trilogy-Classic-v0.5-KSign.ipa
+            output/MK-Trilogy-Classic-v0.5.1-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1707,7 +1708,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.5-FAIL
+          name: MK-Trilogy-Classic-v0.5.1-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
