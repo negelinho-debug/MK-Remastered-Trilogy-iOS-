@@ -1,4 +1,4 @@
-name: Build MK Trilogy Classic v0.1
+name: Build MK Trilogy Classic v0.2 Controls Fix
 
 on:
   workflow_dispatch:
@@ -195,12 +195,13 @@ jobs:
 
               return text + f"\n[{section}]\n{key}={value}\n"
 
-          # Keep the stock iDOS CPU/timing from the MK1 build that
-          # actually worked on-device. Classic changes only scaler.
+          # Keep stock iDOS CPU/timing from the known-good MK1 build.
+          # Force keyboard input so MK2/MK3 do not switch to joystick mode.
           for game in ("MK1", "MK2", "MK3"):
               p = Path(f"game/{game}/CLASSIC.CFG")
               cfg = p.read_text(errors="ignore")
               cfg = set_option(cfg, "render", "scaler", "none")
+              cfg = set_option(cfg, "joystick", "joysticktype", "none")
               p.write_text(cfg)
 
           print("CLASSIC CONFIGS READY")
@@ -211,7 +212,7 @@ jobs:
             cp "game/$GAME/CLASSIC.CFG" "game/$GAME/config/dospad.cfg"
 
             echo "===== $GAME CONFIG ====="
-            grep -E "^(core|cycles|scaler)=" "game/$GAME/CLASSIC.CFG" || true
+            grep -E "^(core|cycles|scaler|joysticktype)=" "game/$GAME/CLASSIC.CFG" || true
           done
 
       - name: Create Trilogy autoboot
@@ -869,31 +870,67 @@ jobs:
               CGFloat h = CGRectGetHeight(_rootContainer.bounds);
               CGFloat d = 48;
 
+              NSString *selectedGame =
+                  [NSUserDefaults.standardUserDefaults
+                   stringForKey:@"MKSelectedGame"]
+                  ?: @"MK1";
+
+              BOOL isMK3 =
+                  [selectedGame isEqualToString:@"MK3"];
+
+              NSInteger keyUp    = isMK3 ? 82 : 22;
+              NSInteger keyLeft  = isMK3 ? 80 : 29;
+              NSInteger keyDown  = isMK3 ? 81 : 27;
+              NSInteger keyRight = isMK3 ? 79 : 6;
+
+              NSInteger keyHP  = isMK3 ? 92 : 24;
+              NSInteger keyLP  = isMK3 ? 98 : 17;
+              NSInteger keyBLK = isMK3 ? 90 : 13;
+              NSInteger keyHK  = isMK3 ? 94 : 12;
+              NSInteger keyLK  = isMK3 ? 91 : 16;
+
+              NSInteger keyStart =
+                  isMK3 ? 40 : 58;
+
               [_rootContainer addSubview:
-               [self mkStableButton:@"▲" frame:CGRectMake(62, h - 150, d, d) key:22]];
+               [self mkStableButton:@"▲" frame:CGRectMake(62, h - 150, d, d) key:keyUp]];
+
               [_rootContainer addSubview:
-               [self mkStableButton:@"◀" frame:CGRectMake(12, h - 99, d, d) key:29]];
+               [self mkStableButton:@"◀" frame:CGRectMake(12, h - 99, d, d) key:keyLeft]];
+
               [_rootContainer addSubview:
-               [self mkStableButton:@"▼" frame:CGRectMake(62, h - 99, d, d) key:27]];
+               [self mkStableButton:@"▼" frame:CGRectMake(62, h - 99, d, d) key:keyDown]];
+
               [_rootContainer addSubview:
-               [self mkStableButton:@"▶" frame:CGRectMake(112, h - 99, d, d) key:6]];
+               [self mkStableButton:@"▶" frame:CGRectMake(112, h - 99, d, d) key:keyRight]];
 
               CGFloat a = 46;
               CGFloat ax = w - 164;
 
               [_rootContainer addSubview:
-               [self mkStableButton:@"HP" frame:CGRectMake(ax, h - 150, a, a) key:24]];
-              [_rootContainer addSubview:
-               [self mkStableButton:@"HK" frame:CGRectMake(ax + 50, h - 150, a, a) key:12]];
-              [_rootContainer addSubview:
-               [self mkStableButton:@"LP" frame:CGRectMake(ax, h - 99, a, a) key:17]];
-              [_rootContainer addSubview:
-               [self mkStableButton:@"LK" frame:CGRectMake(ax + 50, h - 99, a, a) key:16]];
-              [_rootContainer addSubview:
-               [self mkStableButton:@"BLK" frame:CGRectMake(ax + 100, h - 125, a, a) key:13]];
+               [self mkStableButton:@"HP" frame:CGRectMake(ax, h - 150, a, a) key:keyHP]];
 
               [_rootContainer addSubview:
-               [self mkStableButton:@"START" frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32) key:58]];
+               [self mkStableButton:@"HK" frame:CGRectMake(ax + 50, h - 150, a, a) key:keyHK]];
+
+              [_rootContainer addSubview:
+               [self mkStableButton:@"LP" frame:CGRectMake(ax, h - 99, a, a) key:keyLP]];
+
+              [_rootContainer addSubview:
+               [self mkStableButton:@"LK" frame:CGRectMake(ax + 50, h - 99, a, a) key:keyLK]];
+
+              [_rootContainer addSubview:
+               [self mkStableButton:@"BLK" frame:CGRectMake(ax + 100, h - 125, a, a) key:keyBLK]];
+
+              if (isMK3)
+              {
+                  [_rootContainer addSubview:
+                   [self mkStableButton:@"RUN" frame:CGRectMake(ax + 100, h - 177, a, a) key:99]];
+              }
+
+              [_rootContainer addSubview:
+               [self mkStableButton:@"START" frame:CGRectMake(w / 2.0 - 36, h - 40, 72, 32) key:keyStart]];
+
               [_rootContainer addSubview:
                [self mkStableButton:@"ESC" frame:CGRectMake(8, 8, 50, 30) key:41]];
 
@@ -1161,6 +1198,15 @@ jobs:
           grep -n "^scaler=none$" game/MK2/CLASSIC.CFG
           grep -n "^scaler=none$" game/MK3/CLASSIC.CFG
 
+          echo "===== VERIFY KEYBOARD-ONLY INPUT ====="
+          grep -n "^joysticktype=none$" game/MK1/CLASSIC.CFG
+          grep -n "^joysticktype=none$" game/MK2/CLASSIC.CFG
+          grep -n "^joysticktype=none$" game/MK3/CLASSIC.CFG
+
+          echo "===== VERIFY MK3 KEYMAP ====="
+          grep -n "BOOL isMK3" dospad/dospad/Main/DPEmulatorViewController.m
+          grep -n 'mkStableButton:@"RUN"' dospad/dospad/Main/DPEmulatorViewController.m
+
           echo "===== VERIFY STABLE SCREEN / TOUCH ====="
           grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
           grep -n "MKSTABLE_GAME_UI" dospad/dospad/Main/DPEmulatorViewController.m
@@ -1268,7 +1314,7 @@ jobs:
 
           {
             echo "============================================"
-            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.1"
+            echo "MORTAL KOMBAT CLASSIC TRILOGY v0.2"
             echo "============================================"
             echo
             echo "MK1: ORIGINAL MK1.EXE"
@@ -1310,17 +1356,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK-Trilogy-Classic-v0.1-KSign.ipa
+            output/MK-Trilogy-Classic-v0.2-KSign.ipa
 
-          ls -lh output/MK-Trilogy-Classic-v0.1-KSign.ipa
+          ls -lh output/MK-Trilogy-Classic-v0.2-KSign.ipa
 
-      - name: Upload MK Trilogy Classic v0.1
+      - name: Upload MK Trilogy Classic v0.2 Controls Fix
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.1-KSign
+          name: MK-Trilogy-Classic-v0.2-KSign
           path: |
-            output/MK-Trilogy-Classic-v0.1-KSign.ipa
+            output/MK-Trilogy-Classic-v0.2-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
@@ -1328,7 +1374,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: MK-Trilogy-Classic-v0.1-FAIL
+          name: MK-Trilogy-Classic-v0.2-FAIL
           path: |
             output/xcodebuild.log
             output/app-path.txt
