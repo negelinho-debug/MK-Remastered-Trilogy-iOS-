@@ -1,4 +1,4 @@
-name: Build MK1 v0.9.1d Delayed Fullscreen Classic + Remastered
+name: Build MK1 v0.9.1e Dynamic Core Classic + Remastered
 
 on:
   workflow_dispatch:
@@ -178,14 +178,14 @@ jobs:
                   ("render", "frameskip"): "0",
                   ("render", "aspect"): "true",
                   ("render", "scaler"): "none",
-                  ("cpu", "core"): "simple",
+                  ("cpu", "core"): "dynamic",
                   ("cpu", "cycles"): "max 95%",
               },
               "game/MK1/REMASTER.CFG": {
                   ("render", "frameskip"): "0",
                   ("render", "aspect"): "true",
                   ("render", "scaler"): "hq2x",
-                  ("cpu", "core"): "simple",
+                  ("cpu", "core"): "dynamic",
                   ("cpu", "cycles"): "max 95%",
               },
           }
@@ -1042,7 +1042,7 @@ jobs:
           print("SCORPION DARK ICON READY")
           PY
 
-      - name: Verify v0.9.1d patches
+      - name: Verify v0.9.1e patches
         run: |
           set -e
 
@@ -1052,6 +1052,10 @@ jobs:
           echo "===== VERIFY MENU / CONFIG ====="
           grep -n "MKFINAL_MENU" dospad/dospad/Main/DPAppDelegate.m
           grep -n "configDirectory" dospad/dospad/Main/DPAppDelegate.m
+
+          echo "===== VERIFY CPU CORE ====="
+          grep -n "^core=dynamic$" game/MK1/CLASSIC.CFG
+          grep -n "^core=dynamic$" game/MK1/REMASTER.CFG
 
           echo "===== VERIFY STABLE SCREEN PATCH ====="
           grep -n "MKSTABLE_NATIVE_FULLSCREEN" dospad/dospad/Main/DPEmulatorViewController.m
@@ -1070,9 +1074,9 @@ jobs:
             exit 1
           fi
 
-          echo "V0.9.1d PATCHES OK"
+          echo "V0.9.1e PATCHES OK"
 
-      - name: Build MK1 v0.9.1d engine
+      - name: Build MK1 v0.9.1e engine
         run: |
           set +e
           set -o pipefail
@@ -1194,17 +1198,17 @@ jobs:
             --sequesterRsrc \
             --keepParent \
             Payload \
-            output/MK1-v0.9.1d-STABLE-KSign.ipa
+            output/MK1-v0.9.1e-STABLE-KSign.ipa
 
-          ls -lh output/MK1-v0.9.1d-STABLE-KSign.ipa
+          ls -lh output/MK1-v0.9.1e-STABLE-KSign.ipa
 
-      - name: Upload MK1 v0.9.1d Stable
+      - name: Upload MK1 v0.9.1e Stable
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: MK1-v0.9.1d-STABLE-KSign
+          name: MK1-v0.9.1e-STABLE-KSign
           path: |
-            output/MK1-v0.9.1d-STABLE-KSign.ipa
+            output/MK1-v0.9.1e-STABLE-KSign.ipa
             output/BUILD-INFO.txt
           compression-level: 0
 
